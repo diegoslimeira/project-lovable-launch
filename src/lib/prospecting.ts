@@ -16,7 +16,12 @@ export type LeadStatus =
   | "Desqualificado"
   | "Cliente";
 
-export type EvidenceType = "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese" | "Não confirmado";
+export type EvidenceType =
+  | "Fato verificado"
+  | "Inferência"
+  | "Oportunidade"
+  | "Hipótese"
+  | "Não confirmado";
 
 export type Campaign = {
   id: string;
@@ -195,7 +200,7 @@ export const demoLeads: Lead[] = [
     diagnosis:
       "A empresa apresenta prova social local forte e sinais recentes de atividade. Há uma hipótese comercial de ganho ao estruturar aquisição paga, mas a ausência de anúncios deve ser tratada como dado da consulta, não como prova de ausência total.",
     microInsight:
-      "A Odonto Batel tem uma base forte de prova social local e atividade recente, mas não observamos anúncios na consulta realizada.",
+      "A Odonto Batel tem uma base forte de prova social local e atividade recente, mas não observamos anúncios na consulta que fizemos.",
     suggestedMessage:
       "Olá, Rafael. Encontrei a Odonto Batel durante uma análise de clínicas de Curitiba e chamou atenção a combinação de avaliação local forte e atividade recente. Na consulta que fizemos não observamos anúncios ativos, o que levanta uma hipótese interessante de aquisição. Posso te mostrar o raciocínio em 10 minutos?",
   },
