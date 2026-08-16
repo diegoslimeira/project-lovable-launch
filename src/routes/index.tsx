@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Activity, ArrowRight, Bell, Building2, CheckCircle2, ChevronDown, CircleDot, ClipboardCheck, Database, FileSearch, Filter, Globe2, KanbanSquare, LayoutDashboard, Mail, MapPin, Menu, MessageCircle, MoreHorizontal, Phone, Plus, Search, Settings2, ShieldCheck, Sparkles, Target, Users, X, Zap } from "lucide-react";
+import { Activity, ArrowRight, Bell, Building2, CheckCircle2, ChevronDown, ClipboardCheck, Database, FileSearch, Filter, Globe2, KanbanSquare, LayoutDashboard, Mail, MapPin, Menu, MessageCircle, MoreHorizontal, Phone, Plus, Search, Settings2, ShieldCheck, Sparkles, Target, Users, X, Zap } from "lucide-react";
 import { getCampaignProgress, prospectingService } from "../lib/prospecting-service";
 import { campaignRepository } from "../lib/repositories/campaigns";
 import { jobRepository } from "../lib/repositories/jobs";
