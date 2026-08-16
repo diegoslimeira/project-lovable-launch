@@ -6,7 +6,12 @@ function splitLocation(location: string) {
 }
 
 export class MockLeadDiscoveryProvider implements LeadDiscoveryProvider {
-  async discover(input: { segment: string; location: string; radiusKm: number; limit: number }): Promise<CompanyCandidate[]> {
+  async discover(input: {
+    segment: string;
+    location: string;
+    radiusKm: number;
+    limit: number;
+  }): Promise<CompanyCandidate[]> {
     const { city, state } = splitLocation(input.location);
     const count = Math.max(0, Math.min(Math.floor(input.limit), 1000));
     const category = input.segment.trim() || "Empresas";
