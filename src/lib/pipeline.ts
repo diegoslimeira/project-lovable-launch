@@ -4,14 +4,7 @@ import type { JobState } from "./providers";
 export type ProspectingJob = {
   id: string;
   campaignId: Campaign["id"];
-  stage:
-    | "discovery"
-    | "enrichment"
-    | "validation"
-    | "audit"
-    | "diagnosis"
-    | "scoring"
-    | "copy";
+  stage: "discovery" | "enrichment" | "validation" | "audit" | "diagnosis" | "scoring" | "copy";
   state: JobState;
   processed: number;
   total: number;
