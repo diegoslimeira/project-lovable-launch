@@ -16,12 +16,7 @@ export type LeadStatus =
   | "Desqualificado"
   | "Cliente";
 
-export type EvidenceType =
-  | "Fato verificado"
-  | "Inferência"
-  | "Oportunidade"
-  | "Hipótese"
-  | "Não confirmado";
+export type EvidenceType = "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese" | "Não confirmado";
 
 export type Campaign = {
   id: string;
@@ -174,7 +169,8 @@ export const demoLeads: Lead[] = [
     ads: false,
     score: 82,
     confidence: 86,
-    opportunity: "Boa presença local e atividade recente, com oportunidade de aquisição estruturada.",
+    opportunity:
+      "Boa presença local e atividade recente, com oportunidade de aquisição estruturada.",
     status: "Diagnóstico concluído",
     evidence: [
       {
