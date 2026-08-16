@@ -1,4 +1,5 @@
-const hasStorage = () => typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+const hasStorage = () =>
+  typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 
 export function readStorage<T>(key: string, fallback: T): T {
   if (!hasStorage()) return fallback;
