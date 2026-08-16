@@ -34,12 +34,22 @@ export type ContactCandidate = {
 
 export type AuditResult = {
   subject: string;
-  findings: { label: string; value: string; type: "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese" | "Não confirmado"; evidence?: string }[];
+  findings: {
+    label: string;
+    value: string;
+    type: "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese" | "Não confirmado";
+    evidence?: string;
+  }[];
   confidence: number;
 };
 
 export interface LeadDiscoveryProvider {
-  discover(input: { segment: string; location: string; radiusKm: number; limit: number }): Promise<CompanyCandidate[]>;
+  discover(input: {
+    segment: string;
+    location: string;
+    radiusKm: number;
+    limit: number;
+  }): Promise<CompanyCandidate[]>;
 }
 
 export interface ContactEnrichmentProvider {
@@ -55,7 +65,17 @@ export interface AdsProvider {
 }
 
 export interface AIProvider {
-  diagnose(input: { company: CompanyCandidate; contacts: ContactCandidate[]; audits: AuditResult[]; ads: AuditResult[]; offer: string }): Promise<{ diagnosis: string; microInsight: string; message: string }>;
+  diagnose(input: {
+    company: CompanyCandidate;
+    contacts: ContactCandidate[];
+    audits: AuditResult[];
+    ads: AuditResult[];
+    offer: string;
+  }): Promise<{
+    diagnosis: string;
+    microInsight: string;
+    message: string;
+  }>;
 }
 
 export type ProspectingProviders = {
@@ -66,4 +86,13 @@ export type ProspectingProviders = {
   ai?: AIProvider;
 };
 
-export const providerNames = ["google", "maps", "meta", "linkedin", "email", "whatsapp", "enrichment", "ai"] as const;
+export const providerNames = [
+  "google",
+  "maps",
+  "meta",
+  "linkedin",
+  "email",
+  "whatsapp",
+  "enrichment",
+  "ai",
+] as const;
