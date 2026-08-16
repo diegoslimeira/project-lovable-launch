@@ -104,7 +104,10 @@ export function calculateOpportunityScore(input: {
   contact: number;
   activity: number;
 }) {
-  return Math.min(100, Math.max(0, input.fit + input.digital + input.intent + input.contact + input.activity));
+  return Math.min(
+    100,
+    Math.max(0, input.fit + input.digital + input.intent + input.contact + input.activity),
+  );
 }
 
 export const demoLeads: Lead[] = [
@@ -124,8 +127,7 @@ export const demoLeads: Lead[] = [
     ads: true,
     score: 94,
     confidence: 92,
-    opportunity:
-      "Anúncios ativos direcionam para uma página institucional sem oferta específica.",
+    opportunity: "Anúncios ativos direcionam para uma página institucional sem oferta específica.",
     status: "Aguardando aprovação",
     evidence: [
       {
@@ -170,8 +172,7 @@ export const demoLeads: Lead[] = [
     ads: false,
     score: 82,
     confidence: 86,
-    opportunity:
-      "Boa presença local e atividade recente, com oportunidade de aquisição estruturada.",
+    opportunity: "Boa presença local e atividade recente, com oportunidade de aquisição estruturada.",
     status: "Diagnóstico concluído",
     evidence: [
       {
@@ -215,8 +216,7 @@ export const demoLeads: Lead[] = [
     ads: true,
     score: 76,
     confidence: 74,
-    opportunity:
-      "Atividade de aquisição observada, mas contato do decisor ainda não confirmado.",
+    opportunity: "Atividade de aquisição observada, mas contato do decisor ainda não confirmado.",
     status: "Aguardando aprovação",
     evidence: [
       {
@@ -260,8 +260,7 @@ export const demoLeads: Lead[] = [
     ads: true,
     score: 88,
     confidence: 95,
-    opportunity:
-      "Oferta comercial clara, mas baixa conexão entre criativos e página de destino.",
+    opportunity: "Oferta comercial clara, mas baixa conexão entre criativos e página de destino.",
     status: "Pronto para contato",
     evidence: [
       {
