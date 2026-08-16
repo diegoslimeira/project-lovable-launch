@@ -16,7 +16,8 @@ export type LeadStatus =
   | "Desqualificado"
   | "Cliente";
 
-export type EvidenceType = "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese" | "Não confirmado";
+export type EvidenceType = "Fato verificado" | "Inferência" | "Oportunidade" | "Hipótese"
+  | "Não confirmado";
 
 export type Campaign = {
   id: string;
