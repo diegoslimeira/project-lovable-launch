@@ -106,7 +106,10 @@ export function calculateOpportunityScore(input: {
   contact: number;
   activity: number;
 }) {
-  return Math.min(100, Math.max(0, input.fit + input.digital + input.intent + input.contact + input.activity));
+  return Math.min(
+    100,
+    Math.max(0, input.fit + input.digital + input.intent + input.contact + input.activity),
+  );
 }
 
 export const demoLeads: Lead[] = [
