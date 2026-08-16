@@ -4,11 +4,7 @@ import { campaignRepository } from "./repositories/campaigns";
 import { jobRepository } from "./repositories/jobs";
 import { leadRepository } from "./repositories/leads";
 import type { Campaign, Lead } from "./prospecting";
-import type {
-  CompanyCandidate,
-  JobState,
-  LeadDiscoveryProvider,
-} from "./providers";
+import type { CompanyCandidate, JobState, LeadDiscoveryProvider } from "./providers";
 
 const createId = (prefix: string) => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -45,8 +41,7 @@ function candidateToLead(
         source: candidate.sources[0]?.source || "Mock Discovery Provider",
       },
     ],
-    diagnosis:
-      "Ainda não há diagnóstico: enrichment e auditoria não foram executados nesta fase.",
+    diagnosis: "Ainda não há diagnóstico: enrichment e auditoria não foram executados nesta fase.",
     microInsight:
       "Lead criado a partir da descoberta. Nenhuma inferência de decisor ou contato foi adicionada.",
     suggestedMessage:
@@ -54,18 +49,12 @@ function candidateToLead(
   };
 }
 
-function setJobState(
-  job: ProspectingJob,
-  state: JobState,
-  patch: Partial<ProspectingJob> = {},
-) {
+function setJobState(job: ProspectingJob, state: JobState, patch: Partial<ProspectingJob> = {}) {
   return jobRepository.update(job.id, { ...patch, state });
 }
 
 export class ProspectingService {
-  constructor(
-    private readonly discovery: LeadDiscoveryProvider = mockLeadDiscoveryProvider,
-  ) {}
+  constructor(private readonly discovery: LeadDiscoveryProvider = mockLeadDiscoveryProvider) {}
 
   async createAndRun(
     input: Campaign,
@@ -96,8 +85,7 @@ export class ProspectingService {
         attempts: 1,
       });
       const progress = jobs.length ? Math.round((1 / jobs.length) * 100) : 0;
-      const updatedCampaign =
-        campaignRepository.update(campaign.id, { progress }) || campaign;
+      const updatedCampaign = campaignRepository.update(campaign.id, { progress }) || campaign;
       return {
         campaign: updatedCampaign,
         jobs: jobRepository.listByCampaign(campaign.id),
@@ -108,8 +96,7 @@ export class ProspectingService {
         error: error instanceof Error ? error.message : "Falha no discovery",
         attempts: 1,
       });
-      const updatedCampaign =
-        campaignRepository.update(campaign.id, { progress: 0 }) || campaign;
+      const updatedCampaign = campaignRepository.update(campaign.id, { progress: 0 }) || campaign;
       throw Object.assign(new Error("Não foi possível executar o discovery."), {
         cause: error,
         campaign: updatedCampaign,
@@ -125,8 +112,5 @@ export function getCampaignProgress(campaignId: string) {
   if (!jobs.length) return 0;
   const completed = jobs.filter((job) => job.state === "completed").length;
   const running = jobs.filter((job) => job.state === "running").length;
-  return Math.min(
-    100,
-    Math.round(((completed + running * 0.5) / jobs.length) * 100),
-  );
+  return Math.min(100, Math.round(((completed + running * 0.5) / jobs.length) * 100));
 }
