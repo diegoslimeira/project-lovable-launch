@@ -73,7 +73,11 @@ function candidateToLead(
   };
 }
 
-function setJobState(job: ProspectingJob, state: JobState, patch: Partial<ProspectingJob> = {}) {
+async function setJobState(
+  job: ProspectingJob,
+  state: JobState,
+  patch: Partial<ProspectingJob> = {},
+) {
   return jobRepository.update(job.id, { ...patch, state });
 }
 
@@ -118,7 +122,7 @@ export class ProspectingService {
       campaign.decisionMakers,
     );
     const contact = candidates[0];
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
       role: contact?.role ?? lead.role,
       phone: contact?.phone ?? lead.phone,
@@ -159,7 +163,7 @@ export class ProspectingService {
       contact: contactInput,
       company: leadToCompanyCandidate(lead),
     });
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       validation: result,
       status: STAGE_TO_STATUS.validation ?? lead.status,
       evidence: [
@@ -184,7 +188,7 @@ export class ProspectingService {
       this.ads.findPublicAds(company),
     ]);
     const auditFindings = [...digitalFindings, ...adsFindings];
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       auditFindings,
       ads: adsFindings.length > 0,
       status: STAGE_TO_STATUS.audit ?? lead.status,
@@ -219,7 +223,7 @@ export class ProspectingService {
       validation: lead.validation,
       offer: campaign.offer,
     });
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       diagnosisReport: diagnosis,
       diagnosis: diagnosis.narrative,
       microInsight: pickMicroInsight(diagnosis),
@@ -236,16 +240,16 @@ export class ProspectingService {
     });
   }
 
-  private applyScoring(lead: Lead) {
+  private async applyScoring(lead: Lead) {
     const parts = deriveScoreParts(lead, lead.diagnosisReport);
     const score = scoreLead(parts);
-    leadRepository.update(lead.id, { score });
+    await leadRepository.update(lead.id, { score });
   }
 
-  private applyOpportunities(lead: Lead) {
+  private async applyOpportunities(lead: Lead) {
     if (lead.evidence.some((item) => item.label === "Oportunidades")) return;
     const opportunities = lead.diagnosisReport ? identifyOpportunities(lead.diagnosisReport) : [];
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       opportunities,
       opportunity: opportunities.length
         ? `${opportunities[0].service} — ${opportunities[0].rationale}`
@@ -281,7 +285,7 @@ export class ProspectingService {
       offer: campaign.offer,
       objective: campaign.objective,
     });
-    leadRepository.update(lead.id, {
+    await leadRepository.update(lead.id, {
       copy,
       suggestedMessage: copy.whatsapp.body,
       status: STAGE_TO_STATUS.copy ?? lead.status,
@@ -302,13 +306,13 @@ export class ProspectingService {
     total: number,
     run: () => Promise<number>,
   ): Promise<boolean> {
-    setJobState(job, "running", { attempts: 1 });
+    await setJobState(job, "running", { attempts: 1 });
     try {
       const processed = await run();
-      setJobState(job, "completed", { processed, total });
+      await setJobState(job, "completed", { processed, total });
       return true;
     } catch (error) {
-      setJobState(job, "failed", {
+      await setJobState(job, "failed", {
         error: error instanceof Error ? error.message : "Falha na etapa",
         attempts: 1,
       });
@@ -316,18 +320,19 @@ export class ProspectingService {
     }
   }
 
-  private finalizeCampaign(
+  private async finalizeCampaign(
     campaign: Campaign,
     totalJobs: number,
-  ): { campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] } {
-    const finishedJobs = jobRepository.listByCampaign(campaign.id);
+  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
+    const finishedJobs = await jobRepository.listByCampaign(campaign.id);
     const completed = finishedJobs.filter((job) => job.state === "completed").length;
     const progress = totalJobs ? Math.round((completed / totalJobs) * 100) : 0;
-    const updatedCampaign = campaignRepository.update(campaign.id, { progress }) || campaign;
+    const updatedCampaign =
+      (await campaignRepository.update(campaign.id, { progress })) || campaign;
     return {
       campaign: updatedCampaign,
       jobs: finishedJobs,
-      leads: leadRepository.listByCampaign(campaign.id),
+      leads: await leadRepository.listByCampaign(campaign.id),
     };
   }
 
@@ -367,13 +372,13 @@ export class ProspectingService {
       {
         job: jobs[5],
         run: async (leads) => {
-          leads.forEach((lead) => this.applyScoring(lead));
+          await Promise.all(leads.map((lead) => this.applyScoring(lead)));
         },
       },
       {
         job: jobs[6],
         run: async (leads) => {
-          leads.forEach((lead) => this.applyOpportunities(lead));
+          await Promise.all(leads.map((lead) => this.applyOpportunities(lead)));
         },
       },
       {
@@ -386,7 +391,7 @@ export class ProspectingService {
 
     for (const { job, run } of stages) {
       if (job.state === "completed") continue;
-      const current = leadRepository.listByCampaign(campaign.id);
+      const current = await leadRepository.listByCampaign(campaign.id);
       const ok = await this.runStage(job, current.length, async () => {
         await run(current);
         return current.length;
@@ -399,13 +404,13 @@ export class ProspectingService {
     input: Campaign,
   ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
     const campaign: Campaign = { ...input, progress: 0 };
-    campaignRepository.create(campaign);
+    await campaignRepository.create(campaign);
 
     const jobs = defaultJobs(campaign);
-    jobRepository.createMany(jobs);
+    await jobRepository.createMany(jobs);
 
-    const discoveryJob = jobs[0];
-    setJobState(discoveryJob, "running", { attempts: 1 });
+    const discoveryJob = jobs[0]!;
+    await setJobState(discoveryJob, "running", { attempts: 1 });
 
     try {
       const candidates = await this.discovery.discover({
@@ -417,18 +422,19 @@ export class ProspectingService {
       const leads = candidates.map((candidate) =>
         candidateToLead(candidate, campaign, discoveryJob.id),
       );
-      leadRepository.createMany(leads);
-      setJobState(discoveryJob, "completed", {
+      await leadRepository.createMany(leads);
+      await setJobState(discoveryJob, "completed", {
         processed: candidates.length,
         total: campaign.quantity,
         attempts: 1,
       });
     } catch (error) {
-      setJobState(discoveryJob, "failed", {
+      await setJobState(discoveryJob, "failed", {
         error: error instanceof Error ? error.message : "Falha no discovery",
         attempts: 1,
       });
-      const updatedCampaign = campaignRepository.update(campaign.id, { progress: 0 }) || campaign;
+      const updatedCampaign =
+        (await campaignRepository.update(campaign.id, { progress: 0 })) || campaign;
       throw Object.assign(new Error("Não foi possível executar o discovery."), {
         cause: error,
         campaign: updatedCampaign,
@@ -447,21 +453,21 @@ export class ProspectingService {
   async resumeProcessing(
     campaignId: string,
   ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
-    const campaign = campaignRepository.get(campaignId);
+    const campaign = await campaignRepository.get(campaignId);
     if (!campaign) {
       throw new Error("Campanha não encontrada para retomar o processamento.");
     }
 
-    const jobs = jobRepository.listByCampaign(campaignId);
+    const jobs = await jobRepository.listByCampaign(campaignId);
     if (jobs.length < 8) {
       throw new Error("Jobs da campanha não encontrados ou incompletos para retomar.");
     }
 
-    const discoveryJob = jobs[0];
-    const existingLeads = leadRepository.listByCampaign(campaignId);
+    const discoveryJob = jobs[0]!;
+    const existingLeads = await leadRepository.listByCampaign(campaignId);
 
     if (existingLeads.length === 0) {
-      setJobState(discoveryJob, "running", { attempts: 1 });
+      await setJobState(discoveryJob, "running", { attempts: 1 });
       try {
         const candidates = await this.discovery.discover({
           segment: campaign.segment,
@@ -472,21 +478,21 @@ export class ProspectingService {
         const leads = candidates.map((candidate) =>
           candidateToLead(candidate, campaign, discoveryJob.id),
         );
-        leadRepository.createMany(leads);
-        setJobState(discoveryJob, "completed", {
+        await leadRepository.createMany(leads);
+        await setJobState(discoveryJob, "completed", {
           processed: candidates.length,
           total: campaign.quantity,
           attempts: 1,
         });
       } catch (error) {
-        setJobState(discoveryJob, "failed", {
+        await setJobState(discoveryJob, "failed", {
           error: error instanceof Error ? error.message : "Falha no discovery",
           attempts: 1,
         });
         return this.finalizeCampaign(campaign, jobs.length);
       }
     } else if (discoveryJob.state !== "completed") {
-      setJobState(discoveryJob, "completed", {
+      await setJobState(discoveryJob, "completed", {
         processed: existingLeads.length,
         total: campaign.quantity,
       });
@@ -499,8 +505,8 @@ export class ProspectingService {
 
 export const prospectingService = new ProspectingService();
 
-export function getCampaignProgress(campaignId: string) {
-  const jobs = jobRepository.listByCampaign(campaignId);
+export async function getCampaignProgress(campaignId: string) {
+  const jobs = await jobRepository.listByCampaign(campaignId);
   if (!jobs.length) return 0;
   const completed = jobs.filter((job) => job.state === "completed").length;
   const running = jobs.filter((job) => job.state === "running").length;

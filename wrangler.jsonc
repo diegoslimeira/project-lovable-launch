@@ -1,0 +1,25 @@
+{
+  // Project-root Wrangler config. Nitro's cloudflare-module preset merges this
+  // with its own generated settings (name/main/assets/compatibility_date) at
+  // build time — see .output/server/wrangler.json after `bun run build`.
+  //
+  // This file's job is only to declare bindings that Nitro doesn't know about
+  // on its own, such as the D1 database below. It is also what `wrangler`
+  // reads directly for local-only tooling (`wrangler d1 migrations apply
+  // --local`, and Nitro's dev-mode Cloudflare bindings proxy).
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prospectai-db",
+      // Placeholder — replace with the real ID after running
+      // `wrangler d1 create prospectai-db` against your own Cloudflare
+      // account. Not needed for local development: `--local` migrations and
+      // the dev bindings proxy work against a local SQLite emulation keyed by
+      // this file, regardless of whether this ID resolves to a real database.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "drizzle/migrations"
+    }
+  ]
+}
