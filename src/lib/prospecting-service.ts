@@ -1,3 +1,5 @@
+import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import {
   defaultJobs,
   deriveScoreParts,
@@ -337,8 +339,8 @@ export class ProspectingService {
   }
 
   // Executa as etapas enrichment -> copy (jobs[1..7]) em sequência, pulando
-  // qualquer job já "completed". Usado tanto por createAndRun (jobs sempre
-  // "pending", nada é pulado) quanto por resumeProcessing (retoma a partir da
+  // qualquer job já "completed". Usado tanto por runPipeline (jobs sempre
+  // "pending", nada é pulado) quanto por resumePipeline (retoma a partir da
   // primeira etapa incompleta). Cada etapa individual já é idempotente por
   // lead (guards nos métodos enrichLead/validateLead/auditLead/diagnoseLead/
   // applyOpportunities/generateCopy), então reexecutar uma etapa presa em
@@ -400,15 +402,31 @@ export class ProspectingService {
     }
   }
 
-  async createAndRun(
+  // Fase C — parte rápida de início de campanha: só cria as linhas de
+  // campaign/jobs (poucas escritas, sub-segundo). Chamada de dentro de
+  // startCampaignFn, que retorna ao browser assim que isso termina; o
+  // processamento pesado (discovery em diante) roda depois, em background,
+  // via runPipeline.
+  async createCampaignAndJobs(
     input: Campaign,
-  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
+  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[] }> {
     const campaign: Campaign = { ...input, progress: 0 };
     await campaignRepository.create(campaign);
 
     const jobs = defaultJobs(campaign);
     await jobRepository.createMany(jobs);
 
+    return { campaign, jobs };
+  }
+
+  // Fase C — parte longa de início de campanha (discovery + runRemainingStages
+  // + finalize). Roda inteiramente no servidor, disparada via
+  // request.waitUntil() em startCampaignFn — não é mais aguardada pelo
+  // browser, então não lança: qualquer erro fica registrado no estado do job
+  // (setJobState "failed") e no console do servidor; a UI reflete a falha
+  // lendo o ProcessingTask via polling, e "Retomar processamento" continua
+  // disponível para tentar de novo.
+  async runPipeline(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
     const discoveryJob = jobs[0]!;
     await setJobState(discoveryJob, "running", { attempts: 1 });
 
@@ -433,26 +451,23 @@ export class ProspectingService {
         error: error instanceof Error ? error.message : "Falha no discovery",
         attempts: 1,
       });
-      const updatedCampaign =
-        (await campaignRepository.update(campaign.id, { progress: 0 })) || campaign;
-      throw Object.assign(new Error("Não foi possível executar o discovery."), {
-        cause: error,
-        campaign: updatedCampaign,
-      });
+      await campaignRepository.update(campaign.id, { progress: 0 });
+      console.error(`Discovery da campanha ${campaign.id} falhou:`, error);
+      return;
     }
 
     await this.runRemainingStages(campaign, jobs);
-    return this.finalizeCampaign(campaign, jobs.length);
+    await this.finalizeCampaign(campaign, jobs.length);
   }
 
-  // Retoma uma campanha existente sem recriar leads nem repetir etapas já
-  // "completed". Discovery só é reexecutado se ainda não existir nenhum lead
-  // persistido para a campanha (evita duplicar leads); caso já existam leads
-  // mas o job de discovery não esteja marcado "completed" (ex.: aba suspensa
-  // no meio da gravação), o job é apenas normalizado, sem recriar nada.
-  async resumeProcessing(
+  // Fase C — parte rápida de retomada: só valida que a campanha/jobs existem
+  // e devolve o estado atual. Chamada de dentro de resumeCampaignFn, que
+  // retorna ao browser assim que essa validação termina; o processamento
+  // (discovery se necessário + runRemainingStages) roda depois, em
+  // background, via resumePipeline.
+  async validateForResume(
     campaignId: string,
-  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
+  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[] }> {
     const campaign = await campaignRepository.get(campaignId);
     if (!campaign) {
       throw new Error("Campanha não encontrada para retomar o processamento.");
@@ -463,8 +478,17 @@ export class ProspectingService {
       throw new Error("Jobs da campanha não encontrados ou incompletos para retomar.");
     }
 
+    return { campaign, jobs };
+  }
+
+  // Fase C — parte longa de retomada. Mesma lógica de sempre (discovery só
+  // reexecuta se não existir nenhum lead persistido; senão só normaliza o job
+  // de discovery e segue para runRemainingStages), agora rodando em
+  // background via request.waitUntil() em resumeCampaignFn — não lança, pelo
+  // mesmo motivo de runPipeline acima.
+  async resumePipeline(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
     const discoveryJob = jobs[0]!;
-    const existingLeads = await leadRepository.listByCampaign(campaignId);
+    const existingLeads = await leadRepository.listByCampaign(campaign.id);
 
     if (existingLeads.length === 0) {
       await setJobState(discoveryJob, "running", { attempts: 1 });
@@ -489,7 +513,8 @@ export class ProspectingService {
           error: error instanceof Error ? error.message : "Falha no discovery",
           attempts: 1,
         });
-        return this.finalizeCampaign(campaign, jobs.length);
+        console.error(`Discovery (retomada) da campanha ${campaign.id} falhou:`, error);
+        return;
       }
     } else if (discoveryJob.state !== "completed") {
       await setJobState(discoveryJob, "completed", {
@@ -499,11 +524,61 @@ export class ProspectingService {
     }
 
     await this.runRemainingStages(campaign, jobs);
-    return this.finalizeCampaign(campaign, jobs.length);
+    await this.finalizeCampaign(campaign, jobs.length);
   }
 }
 
 export const prospectingService = new ProspectingService();
+
+// waitUntil não faz parte do tipo padrão de Request (lib.dom) — é uma
+// extensão que o preset cloudflare-module do Nitro anexa em runtime (ver
+// augmentReq em node_modules/nitro/dist/presets/cloudflare/runtime/
+// _module-handler.mjs), repassada por H3Event.waitUntil(). Presente em dev
+// (wrangler dev) e produção; ausente apenas fora do runtime Cloudflare (ex.:
+// bun run dev), caso em que o processamento em background já não teria D1
+// de qualquer forma — fallback é só não deixar o TypeError explodir.
+function runInBackground(task: Promise<void>) {
+  const request = getRequest() as Request & { waitUntil?: (promise: Promise<unknown>) => void };
+  request.waitUntil?.(task);
+}
+
+// Fase C — pontos de entrada chamados pelo browser. Cada um faz a parte
+// rápida de forma síncrona (retorna assim que ela termina) e agenda a parte
+// longa via request.waitUntil(), que mantém o Worker vivo depois da resposta
+// já ter sido enviada — o processamento continua no servidor mesmo que a aba
+// seja fechada/recarregada. Ver relatório da Fase C para a análise completa
+// de por que isso é seguro no runtime atual (sem Queues/Durable Objects).
+const startCampaignFn = createServerFn({ method: "POST" })
+  .validator((campaign: Campaign) => campaign)
+  .handler(async ({ data }) => {
+    const { campaign, jobs } = await prospectingService.createCampaignAndJobs(data);
+    runInBackground(
+      prospectingService.runPipeline(campaign, jobs).catch((error) => {
+        console.error(`Pipeline em background da campanha ${campaign.id} falhou:`, error);
+      }),
+    );
+    return campaign;
+  });
+
+export function startCampaign(campaign: Campaign): Promise<Campaign> {
+  return startCampaignFn({ data: campaign });
+}
+
+const resumeCampaignFn = createServerFn({ method: "POST" })
+  .validator((campaignId: string) => campaignId)
+  .handler(async ({ data: campaignId }) => {
+    const { campaign, jobs } = await prospectingService.validateForResume(campaignId);
+    runInBackground(
+      prospectingService.resumePipeline(campaign, jobs).catch((error) => {
+        console.error(`Retomada em background da campanha ${campaign.id} falhou:`, error);
+      }),
+    );
+    return campaign;
+  });
+
+export function resumeCampaignProcessing(campaignId: string): Promise<Campaign> {
+  return resumeCampaignFn({ data: campaignId });
+}
 
 export async function getCampaignProgress(campaignId: string) {
   const jobs = await jobRepository.listByCampaign(campaignId);

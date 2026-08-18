@@ -1,6 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
+import { workspaces } from "./schema";
 
 // Nitro's cloudflare-module preset sets `globalThis.__env__` to the Workers
 // `env` on every request, identically in dev (via wrangler's local bindings
@@ -30,4 +31,20 @@ export function getDb() {
 // body only; every call site downstream already goes through this seam.
 export function getCurrentWorkspaceId(): string {
   return "dev-workspace";
+}
+
+// Toda tabela com dado de negócio referencia workspaces.id via FK (ver
+// schema.ts), mas nada nunca inseriu a própria linha do workspace stub —
+// funcionava em sessões anteriores só porque uma linha "dev-workspace"
+// tinha sido criada manualmente em algum teste e nunca foi apagada entre
+// sessões. Num D1 realmente novo (migrations aplicadas do zero), o primeiro
+// insert em qualquer tabela workspace-scoped falha com FOREIGN KEY
+// constraint. Chamado uma vez por criação de campanha (a raiz de todo fluxo
+// novo); idempotente via onConflictDoNothing, então repetir não tem custo
+// além de um insert a mais.
+export async function ensureWorkspace(db: ReturnType<typeof getDb>, workspaceId: string) {
+  await db
+    .insert(workspaces)
+    .values({ id: workspaceId, name: "Dev Workspace", createdAt: new Date().toISOString() })
+    .onConflictDoNothing();
 }

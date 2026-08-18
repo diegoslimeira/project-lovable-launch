@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { and, eq } from "drizzle-orm";
 import type { Campaign } from "../prospecting";
-import { getCurrentWorkspaceId, getDb } from "../db/client";
+import { ensureWorkspace, getCurrentWorkspaceId, getDb } from "../db/client";
 import { campaigns } from "../db/schema";
 
 // Fase B — mesmo nome/API pública de antes (campaignRepository.list/get/
@@ -52,6 +52,7 @@ const createCampaignFn = createServerFn({ method: "POST" })
   .handler(async ({ data: campaign }) => {
     const db = getDb();
     const workspaceId = getCurrentWorkspaceId();
+    await ensureWorkspace(db, workspaceId);
     await db.insert(campaigns).values({ ...campaign, workspaceId });
     return campaign;
   });
