@@ -113,7 +113,10 @@ export class ProspectingService {
 
   private async enrichLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Enriquecimento")) return;
-    const candidates = await this.enrichment.enrich(leadToCompanyCandidate(lead), campaign.decisionMakers);
+    const candidates = await this.enrichment.enrich(
+      leadToCompanyCandidate(lead),
+      campaign.decisionMakers,
+    );
     const contact = candidates[0];
     leadRepository.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
@@ -185,7 +188,8 @@ export class ProspectingService {
       auditFindings,
       ads: adsFindings.length > 0,
       status: STAGE_TO_STATUS.audit ?? lead.status,
-      opportunity: "Enrichment, validation e audit concluídos. Diagnóstico detalhado ainda não foi gerado.",
+      opportunity:
+        "Enrichment, validation e audit concluídos. Diagnóstico detalhado ainda não foi gerado.",
       diagnosis:
         "Achados de auditoria coletados e estruturados por dimensão. A consolidação em diagnóstico será implementada em uma fase futura.",
       microInsight:
@@ -205,7 +209,9 @@ export class ProspectingService {
   private async diagnoseLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Diagnóstico")) return;
     const contact =
-      lead.decisionMaker !== "Não localizado" ? { name: lead.decisionMaker, role: lead.role } : undefined;
+      lead.decisionMaker !== "Não localizado"
+        ? { name: lead.decisionMaker, role: lead.role }
+        : undefined;
     const diagnosis = await this.ai.diagnose({
       company: leadToCompanyCandidate(lead),
       contact,
@@ -262,7 +268,9 @@ export class ProspectingService {
     if (!lead.diagnosisReport) return;
     if (lead.evidence.some((item) => item.label === "Abordagem")) return;
     const contact =
-      lead.decisionMaker !== "Não localizado" ? { name: lead.decisionMaker, role: lead.role } : undefined;
+      lead.decisionMaker !== "Não localizado"
+        ? { name: lead.decisionMaker, role: lead.role }
+        : undefined;
     const copy = await this.copy.generate({
       company: leadToCompanyCandidate(lead),
       contact,
@@ -332,13 +340,48 @@ export class ProspectingService {
   // "running" não duplica dados de leads já processados nela.
   private async runRemainingStages(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
     const stages: { job: ProspectingJob; run: (leads: Lead[]) => Promise<void> }[] = [
-      { job: jobs[1], run: async (leads) => { await Promise.all(leads.map((lead) => this.enrichLead(lead, campaign))); } },
-      { job: jobs[2], run: async (leads) => { await Promise.all(leads.map((lead) => this.validateLead(lead))); } },
-      { job: jobs[3], run: async (leads) => { await Promise.all(leads.map((lead) => this.auditLead(lead))); } },
-      { job: jobs[4], run: async (leads) => { await Promise.all(leads.map((lead) => this.diagnoseLead(lead, campaign))); } },
-      { job: jobs[5], run: async (leads) => { leads.forEach((lead) => this.applyScoring(lead)); } },
-      { job: jobs[6], run: async (leads) => { leads.forEach((lead) => this.applyOpportunities(lead)); } },
-      { job: jobs[7], run: async (leads) => { await Promise.all(leads.map((lead) => this.generateCopy(lead, campaign))); } },
+      {
+        job: jobs[1],
+        run: async (leads) => {
+          await Promise.all(leads.map((lead) => this.enrichLead(lead, campaign)));
+        },
+      },
+      {
+        job: jobs[2],
+        run: async (leads) => {
+          await Promise.all(leads.map((lead) => this.validateLead(lead)));
+        },
+      },
+      {
+        job: jobs[3],
+        run: async (leads) => {
+          await Promise.all(leads.map((lead) => this.auditLead(lead)));
+        },
+      },
+      {
+        job: jobs[4],
+        run: async (leads) => {
+          await Promise.all(leads.map((lead) => this.diagnoseLead(lead, campaign)));
+        },
+      },
+      {
+        job: jobs[5],
+        run: async (leads) => {
+          leads.forEach((lead) => this.applyScoring(lead));
+        },
+      },
+      {
+        job: jobs[6],
+        run: async (leads) => {
+          leads.forEach((lead) => this.applyOpportunities(lead));
+        },
+      },
+      {
+        job: jobs[7],
+        run: async (leads) => {
+          await Promise.all(leads.map((lead) => this.generateCopy(lead, campaign)));
+        },
+      },
     ];
 
     for (const { job, run } of stages) {
@@ -371,7 +414,9 @@ export class ProspectingService {
         radiusKm: campaign.radius,
         limit: campaign.quantity,
       });
-      const leads = candidates.map((candidate) => candidateToLead(candidate, campaign, discoveryJob.id));
+      const leads = candidates.map((candidate) =>
+        candidateToLead(candidate, campaign, discoveryJob.id),
+      );
       leadRepository.createMany(leads);
       setJobState(discoveryJob, "completed", {
         processed: candidates.length,
@@ -424,7 +469,9 @@ export class ProspectingService {
           radiusKm: campaign.radius,
           limit: campaign.quantity,
         });
-        const leads = candidates.map((candidate) => candidateToLead(candidate, campaign, discoveryJob.id));
+        const leads = candidates.map((candidate) =>
+          candidateToLead(candidate, campaign, discoveryJob.id),
+        );
         leadRepository.createMany(leads);
         setJobState(discoveryJob, "completed", {
           processed: candidates.length,
@@ -439,7 +486,10 @@ export class ProspectingService {
         return this.finalizeCampaign(campaign, jobs.length);
       }
     } else if (discoveryJob.state !== "completed") {
-      setJobState(discoveryJob, "completed", { processed: existingLeads.length, total: campaign.quantity });
+      setJobState(discoveryJob, "completed", {
+        processed: existingLeads.length,
+        total: campaign.quantity,
+      });
     }
 
     await this.runRemainingStages(campaign, jobs);

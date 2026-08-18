@@ -84,12 +84,7 @@ export type Diagnosis = {
 };
 
 export type ServiceCategory =
-  | "trafego_pago"
-  | "redes_sociais"
-  | "identidade_visual"
-  | "gmb"
-  | "site"
-  | "reputacao";
+  "trafego_pago" | "redes_sociais" | "identidade_visual" | "gmb" | "site" | "reputacao";
 
 export type ServiceOpportunity = {
   id: string;

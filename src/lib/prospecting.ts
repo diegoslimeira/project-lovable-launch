@@ -1,4 +1,10 @@
-import type { AuditResult, Copy, Diagnosis, ServiceOpportunity, ValidationResult } from "./providers";
+import type {
+  AuditResult,
+  Copy,
+  Diagnosis,
+  ServiceOpportunity,
+  ValidationResult,
+} from "./providers";
 
 export type LeadStatus =
   // Estados técnicos: refletem o processamento do pipeline (Discovery -> Copy).
@@ -57,7 +63,14 @@ export const COMMERCIAL_PIPELINE_STATUSES: LeadStatus[] = [
   "Cliente",
 ];
 
-export const COMMERCIAL_EXIT_STATUSES: LeadStatus[] = ["Sem resposta", "Sem interesse", "Desqualificado", "No-show", "Cancelada", "Perdido"];
+export const COMMERCIAL_EXIT_STATUSES: LeadStatus[] = [
+  "Sem resposta",
+  "Sem interesse",
+  "Desqualificado",
+  "No-show",
+  "Cancelada",
+  "Perdido",
+];
 
 export function isCommercialStatus(status: LeadStatus): boolean {
   return !TECHNICAL_STATUSES.includes(status);
@@ -84,10 +97,7 @@ export type ContactAttempt = {
 // depois classificada manualmente pelo operador. Um array permite reclassificar
 // e, futuramente, registrar mais de uma resposta sem perder a anterior.
 export type ResponseClassification =
-  | "Demonstrou interesse"
-  | "Pediu contato em outro momento"
-  | "Sem interesse"
-  | "Resposta neutra";
+  "Demonstrou interesse" | "Pediu contato em outro momento" | "Sem interesse" | "Resposta neutra";
 
 export const RESPONSE_CLASSIFICATIONS: ResponseClassification[] = [
   "Demonstrou interesse",
@@ -109,20 +119,24 @@ export type LeadResponse = {
 // BANT da ligação de qualificação humana. Cada dimensão é só um registro
 // estruturado — a decisão final (outcome) é sempre uma ação humana explícita,
 // nunca derivada automaticamente do preenchimento.
-export type BudgetRating = "Tem orçamento" | "Pode ter orçamento" | "Sem orçamento" | "Não identificado";
+export type BudgetRating =
+  "Tem orçamento" | "Pode ter orçamento" | "Sem orçamento" | "Não identificado";
 export type AuthorityRating =
-  | "É o decisor"
-  | "Influencia a decisão"
-  | "Precisa envolver outro decisor"
-  | "Não identificado";
+  "É o decisor" | "Influencia a decisão" | "Precisa envolver outro decisor" | "Não identificado";
 export type NeedRating =
   | "Necessidade clara"
   | "Necessidade potencial"
   | "Sem necessidade identificada"
   | "Não identificado";
-export type TimingRating = "Imediato" | "Até 30 dias" | "31–90 dias" | "Mais de 90 dias" | "Não identificado";
+export type TimingRating =
+  "Imediato" | "Até 30 dias" | "31–90 dias" | "Mais de 90 dias" | "Não identificado";
 
-export const BUDGET_RATINGS: BudgetRating[] = ["Tem orçamento", "Pode ter orçamento", "Sem orçamento", "Não identificado"];
+export const BUDGET_RATINGS: BudgetRating[] = [
+  "Tem orçamento",
+  "Pode ter orçamento",
+  "Sem orçamento",
+  "Não identificado",
+];
 export const AUTHORITY_RATINGS: AuthorityRating[] = [
   "É o decisor",
   "Influencia a decisão",
@@ -135,7 +149,13 @@ export const NEED_RATINGS: NeedRating[] = [
   "Sem necessidade identificada",
   "Não identificado",
 ];
-export const TIMING_RATINGS: TimingRating[] = ["Imediato", "Até 30 dias", "31–90 dias", "Mais de 90 dias", "Não identificado"];
+export const TIMING_RATINGS: TimingRating[] = [
+  "Imediato",
+  "Até 30 dias",
+  "31–90 dias",
+  "Mais de 90 dias",
+  "Não identificado",
+];
 
 export type QualificationOutcome = "Qualificado" | "Follow-up" | "Desqualificado";
 
@@ -170,13 +190,34 @@ export const MEETING_INTEREST_LEVELS: MeetingInterestLevel[] = ["Alto", "Médio"
 // "Assinatura do contrato" NÃO equivale a Cliente — ainda é processo comercial
 // em andamento (Negociação). Cliente só é confirmado manualmente, via a ação
 // estruturada de fechamento, quando o pagamento/venda é efetivamente confirmado.
-export type MeetingNextStep = "Preparar proposta" | "Enviar proposta" | "Nova conversa" | "Aguardar retorno" | "Follow-up" | "Assinatura do contrato" | "Sem próximo passo definido";
-export const MEETING_NEXT_STEPS: MeetingNextStep[] = ["Preparar proposta", "Enviar proposta", "Nova conversa", "Aguardar retorno", "Follow-up", "Assinatura do contrato", "Sem próximo passo definido"];
+export type MeetingNextStep =
+  | "Preparar proposta"
+  | "Enviar proposta"
+  | "Nova conversa"
+  | "Aguardar retorno"
+  | "Follow-up"
+  | "Assinatura do contrato"
+  | "Sem próximo passo definido";
+export const MEETING_NEXT_STEPS: MeetingNextStep[] = [
+  "Preparar proposta",
+  "Enviar proposta",
+  "Nova conversa",
+  "Aguardar retorno",
+  "Follow-up",
+  "Assinatura do contrato",
+  "Sem próximo passo definido",
+];
 
 // Catálogo comercial fixo da V1 — o que a Nexus efetivamente vende. Distinto
 // das oportunidades identificadas pelo diagnóstico (Lead.opportunities), que
 // são problemas/contexto, não o catálogo de venda.
-export const COMMERCIAL_SERVICES = ["Nexus Origin", "Gestão de Tráfego Pago", "Gestão de Redes Sociais (Social Media)", "Site/LP", "Outro"] as const;
+export const COMMERCIAL_SERVICES = [
+  "Nexus Origin",
+  "Gestão de Tráfego Pago",
+  "Gestão de Redes Sociais (Social Media)",
+  "Site/LP",
+  "Outro",
+] as const;
 export type CommercialService = (typeof COMMERCIAL_SERVICES)[number];
 
 // Proposta comercial apresentada durante a própria reunião realizada — não é

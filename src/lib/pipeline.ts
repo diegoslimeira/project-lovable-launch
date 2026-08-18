@@ -1,5 +1,16 @@
-import { calculateOpportunityScore, type Campaign, type Lead, type LeadStatus } from "./prospecting";
-import type { AuditDimension, Diagnosis, JobState, ServiceCategory, ServiceOpportunity } from "./providers";
+import {
+  calculateOpportunityScore,
+  type Campaign,
+  type Lead,
+  type LeadStatus,
+} from "./prospecting";
+import type {
+  AuditDimension,
+  Diagnosis,
+  JobState,
+  ServiceCategory,
+  ServiceOpportunity,
+} from "./providers";
 
 export type ProspectingJob = {
   id: string;
@@ -82,19 +93,31 @@ export function deriveScoreParts(lead: Lead, diagnosis?: Diagnosis) {
     ? Math.round(((lead.validation.valid ? 100 : lead.validation.confidence) / 100) * 20)
     : 5;
 
-  const digitalSections = sections.filter((section) => DIGITAL_DIMENSIONS.includes(section.dimension));
+  const digitalSections = sections.filter((section) =>
+    DIGITAL_DIMENSIONS.includes(section.dimension),
+  );
   const digital = digitalSections.length
     ? Math.round(
-        (digitalSections.reduce((sum, section) => sum + section.confidence, 0) / digitalSections.length / 100) * 20,
+        (digitalSections.reduce((sum, section) => sum + section.confidence, 0) /
+          digitalSections.length /
+          100) *
+          20,
       )
     : 10;
 
-  const intent = Math.min(20, sections.filter((section) => section.opportunities.length > 0).length * 5);
+  const intent = Math.min(
+    20,
+    sections.filter((section) => section.opportunities.length > 0).length * 5,
+  );
 
-  const activitySections = sections.filter((section) => ACTIVITY_DIMENSIONS.includes(section.dimension));
+  const activitySections = sections.filter((section) =>
+    ACTIVITY_DIMENSIONS.includes(section.dimension),
+  );
   const activity = activitySections.length
     ? Math.round(
-        (activitySections.reduce((sum, section) => sum + section.confidence, 0) / activitySections.length / 100) *
+        (activitySections.reduce((sum, section) => sum + section.confidence, 0) /
+          activitySections.length /
+          100) *
           20,
       )
     : 10;
@@ -108,17 +131,37 @@ export function priorityLabel(score: number): "baixa" | "média" | "alta" {
   return "baixa";
 }
 
-type CatalogEntry = { category: ServiceCategory; service: string; matchesDimensions: AuditDimension[] };
+type CatalogEntry = {
+  category: ServiceCategory;
+  service: string;
+  matchesDimensions: AuditDimension[];
+};
 
 // Catálogo mock de serviços — pequeno, só para validar a arquitetura. Será
 // substituído pelo catálogo real de serviços da empresa em uma fase futura.
 const SERVICE_CATALOG: CatalogEntry[] = [
   { category: "trafego_pago", service: "Gestão de tráfego pago", matchesDimensions: ["ads"] },
-  { category: "redes_sociais", service: "Gestão de redes sociais", matchesDimensions: ["social_media"] },
-  { category: "identidade_visual", service: "Consultoria de identidade visual", matchesDimensions: ["visual_identity"] },
+  {
+    category: "redes_sociais",
+    service: "Gestão de redes sociais",
+    matchesDimensions: ["social_media"],
+  },
+  {
+    category: "identidade_visual",
+    service: "Consultoria de identidade visual",
+    matchesDimensions: ["visual_identity"],
+  },
   { category: "gmb", service: "Otimização de Google Meu Negócio", matchesDimensions: ["gmb"] },
-  { category: "site", service: "Desenvolvimento/otimização de site", matchesDimensions: ["website"] },
-  { category: "reputacao", service: "Gestão de reputação e avaliações", matchesDimensions: ["reviews", "reclame_aqui"] },
+  {
+    category: "site",
+    service: "Desenvolvimento/otimização de site",
+    matchesDimensions: ["website"],
+  },
+  {
+    category: "reputacao",
+    service: "Gestão de reputação e avaliações",
+    matchesDimensions: ["reviews", "reclame_aqui"],
+  },
 ];
 
 // Transforma as oportunidades apontadas por seção do diagnóstico em recomendações
@@ -128,14 +171,17 @@ export function identifyOpportunities(diagnosis: Diagnosis): ServiceOpportunity[
   const opportunities: ServiceOpportunity[] = [];
   for (const section of diagnosis.sections) {
     if (section.impact === "baixo" && section.opportunities.length === 0) continue;
-    const matches = SERVICE_CATALOG.filter((entry) => entry.matchesDimensions.includes(section.dimension));
+    const matches = SERVICE_CATALOG.filter((entry) =>
+      entry.matchesDimensions.includes(section.dimension),
+    );
     for (const entry of matches) {
       opportunities.push({
         id: `${section.dimension}-${entry.category}`,
         service: entry.service,
         category: entry.category,
         rationale: section.summary,
-        priority: section.impact === "alto" ? "alta" : section.impact === "médio" ? "média" : "baixa",
+        priority:
+          section.impact === "alto" ? "alta" : section.impact === "médio" ? "média" : "baixa",
         evidenceRefs: section.keyFindings,
       });
     }
