@@ -13,13 +13,41 @@
     {
       "binding": "DB",
       "database_name": "prospectai-db",
-      // Placeholder — replace with the real ID after running
-      // `wrangler d1 create prospectai-db` against your own Cloudflare
-      // account. Not needed for local development: `--local` migrations and
-      // the dev bindings proxy work against a local SQLite emulation keyed by
-      // this file, regardless of whether this ID resolves to a real database.
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "drizzle/migrations"
-    }
-  ]
+      // Fase C.1 — real D1 database created for remote test-environment
+      // validation (see the Fase C.1 report). Not a secret: this UUID only
+      // identifies which database to route to; access itself is gated by
+      // the Cloudflare account's own auth (API token / login), same as the
+      // database_name string right above it. `--local` dev/build still work
+      // against a local SQLite emulation keyed by this file regardless of
+      // this ID resolving to a real database.
+      "database_id": "d6d873d2-3901-47f7-9e87-925531dea3fc",
+      "migrations_dir": "drizzle/migrations",
+    },
+  ],
+  // Fase C.1 — fila para processamento do pipeline de prospecção fora do
+  // waitUntil(). Produtor e consumidor apontam para a mesma fila porque
+  // producer (server functions) e consumer (plugin Nitro) rodam no mesmo
+  // Worker. Local: `wrangler dev` emula a fila em memória via Miniflare,
+  // sem precisar de `wrangler queues create`. Remoto: a fila precisa
+  // existir de fato antes do deploy — rode `wrangler queues create
+  // prospecting-pipeline` uma vez contra sua conta Cloudflare (ver relatório
+  // da Fase C.1 para o passo a passo completo).
+  "queues": {
+    "producers": [{ "binding": "PROSPECTING_QUEUE", "queue": "prospecting-pipeline" }],
+    "consumers": [
+      {
+        "queue": "prospecting-pipeline",
+        // Uma mensagem por invocação: evita a complexidade de ack parcial
+        // de lote (mensagens diferentes de campanhas diferentes não têm
+        // relação entre si, então não há ganho real em agrupá-las).
+        "max_batch_size": 1,
+        // 4 tentativas no total (1 inicial + 3 retries) com 10s de intervalo.
+        // Suficiente para absorver falhas transitórias (ex.: contenção do D1
+        // local) sem precisar de lógica de retry própria — o "Retomar
+        // processamento" na UI já cobre o caso de esgotar as tentativas.
+        "max_retries": 3,
+        "retry_delay": 10,
+      },
+    ],
+  },
 }

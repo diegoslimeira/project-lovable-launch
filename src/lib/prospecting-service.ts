@@ -1,9 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
 import {
   defaultJobs,
   deriveScoreParts,
   identifyOpportunities,
+  PIPELINE_BATCH_SIZE,
+  PIPELINE_STAGES,
   priorityLabel,
   scoreLead,
   STAGE_TO_STATUS,
@@ -15,9 +16,10 @@ import { mockContactValidationProvider } from "./providers/mock-validation";
 import { mockAdsProvider, mockDigitalAuditProvider } from "./providers/mock-audit";
 import { mockAIProvider } from "./providers/mock-diagnosis";
 import { mockCopyProvider } from "./providers/mock-copy";
-import { campaignRepository } from "./repositories/campaigns";
-import { jobRepository } from "./repositories/jobs";
-import { leadRepository } from "./repositories/leads";
+import { campaignRepositoryDirect } from "./repositories/campaigns";
+import { jobRepository, jobRepositoryDirect } from "./repositories/jobs";
+import { leadRepositoryDirect } from "./repositories/leads";
+import { getProspectingQueue, type ProspectingQueueMessage } from "./db/client";
 import type { Campaign, Lead } from "./prospecting";
 import type {
   AdsProvider,
@@ -32,20 +34,26 @@ import type {
   LeadDiscoveryProvider,
 } from "./providers";
 
-const createId = (prefix: string) => {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-};
+type PipelineStage = ProspectingJob["stage"];
+
+// Fase C.2 — id determinístico por campanha+posição (em vez de UUID
+// aleatório). Uma mensagem de fila reentregue pela Cloudflare Queue (retry
+// nativo ou reentrega genuína) tenta recriar exatamente os mesmos leads do
+// mesmo lote; como o id é sempre o mesmo, o insert (onConflictDoNothing, ver
+// repositories/leads.ts) simplesmente não faz nada na segunda tentativa, em
+// vez de criar um lead duplicado com um id novo.
+function leadIdForIndex(campaignId: string, index: number): string {
+  return `${campaignId}-lead-${index}`;
+}
 
 function candidateToLead(
   candidate: CompanyCandidate,
   campaign: Campaign,
   sourceJobId: string,
+  index: number,
 ): Lead {
   return {
-    id: createId("lead"),
+    id: leadIdForIndex(campaign.id, index),
     campaignId: campaign.id,
     sourceJobId,
     company: candidate.name,
@@ -80,7 +88,7 @@ async function setJobState(
   state: JobState,
   patch: Partial<ProspectingJob> = {},
 ) {
-  return jobRepository.update(job.id, { ...patch, state });
+  return jobRepositoryDirect.update(job.id, { ...patch, state });
 }
 
 function leadToCompanyCandidate(lead: Lead): CompanyCandidate {
@@ -106,6 +114,18 @@ function pickMicroInsight(diagnosis: Diagnosis): string {
   return top.summary;
 }
 
+// Fase C.2 — próxima etapa na ordem canônica (PIPELINE_STAGES), ou null se
+// `stage` já é a última (copy). Única fonte de verdade para "o que roda
+// depois de X", tanto para encadear mensagens quanto para calcular retomada.
+function nextStageAfter(stage: PipelineStage): PipelineStage | null {
+  const index = PIPELINE_STAGES.indexOf(stage);
+  return index >= 0 && index < PIPELINE_STAGES.length - 1 ? PIPELINE_STAGES[index + 1]! : null;
+}
+
+async function sendPipelineMessage(message: ProspectingQueueMessage): Promise<void> {
+  await getProspectingQueue().send(message);
+}
+
 export class ProspectingService {
   constructor(
     private readonly discovery: LeadDiscoveryProvider = mockLeadDiscoveryProvider,
@@ -124,7 +144,7 @@ export class ProspectingService {
       campaign.decisionMakers,
     );
     const contact = candidates[0];
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
       role: contact?.role ?? lead.role,
       phone: contact?.phone ?? lead.phone,
@@ -165,7 +185,7 @@ export class ProspectingService {
       contact: contactInput,
       company: leadToCompanyCandidate(lead),
     });
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       validation: result,
       status: STAGE_TO_STATUS.validation ?? lead.status,
       evidence: [
@@ -190,7 +210,7 @@ export class ProspectingService {
       this.ads.findPublicAds(company),
     ]);
     const auditFindings = [...digitalFindings, ...adsFindings];
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       auditFindings,
       ads: adsFindings.length > 0,
       status: STAGE_TO_STATUS.audit ?? lead.status,
@@ -225,7 +245,7 @@ export class ProspectingService {
       validation: lead.validation,
       offer: campaign.offer,
     });
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       diagnosisReport: diagnosis,
       diagnosis: diagnosis.narrative,
       microInsight: pickMicroInsight(diagnosis),
@@ -245,13 +265,13 @@ export class ProspectingService {
   private async applyScoring(lead: Lead) {
     const parts = deriveScoreParts(lead, lead.diagnosisReport);
     const score = scoreLead(parts);
-    await leadRepository.update(lead.id, { score });
+    await leadRepositoryDirect.update(lead.id, { score });
   }
 
   private async applyOpportunities(lead: Lead) {
     if (lead.evidence.some((item) => item.label === "Oportunidades")) return;
     const opportunities = lead.diagnosisReport ? identifyOpportunities(lead.diagnosisReport) : [];
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       opportunities,
       opportunity: opportunities.length
         ? `${opportunities[0].service} — ${opportunities[0].rationale}`
@@ -287,7 +307,7 @@ export class ProspectingService {
       offer: campaign.offer,
       objective: campaign.objective,
     });
-    await leadRepository.update(lead.id, {
+    await leadRepositoryDirect.update(lead.id, {
       copy,
       suggestedMessage: copy.whatsapp.body,
       status: STAGE_TO_STATUS.copy ?? lead.status,
@@ -303,102 +323,157 @@ export class ProspectingService {
     });
   }
 
-  private async runStage(
-    job: ProspectingJob,
-    total: number,
-    run: () => Promise<number>,
-  ): Promise<boolean> {
-    await setJobState(job, "running", { attempts: 1 });
-    try {
-      const processed = await run();
-      await setJobState(job, "completed", { processed, total });
-      return true;
-    } catch (error) {
-      await setJobState(job, "failed", {
-        error: error instanceof Error ? error.message : "Falha na etapa",
-        attempts: 1,
-      });
-      return false;
+  // Mapeia cada etapa (exceto discovery) para a função de processamento de
+  // 1 lead correspondente. As funções privadas acima não mudam: só a forma
+  // como são invocadas (em lotes pequenos, não Promise.all sobre a campanha
+  // inteira) muda nesta fase.
+  private stageRunner(
+    stage: Exclude<PipelineStage, "discovery">,
+    campaign: Campaign,
+  ): (lead: Lead) => Promise<void> {
+    switch (stage) {
+      case "enrichment":
+        return (lead) => this.enrichLead(lead, campaign);
+      case "validation":
+        return (lead) => this.validateLead(lead);
+      case "audit":
+        return (lead) => this.auditLead(lead);
+      case "diagnosis":
+        return (lead) => this.diagnoseLead(lead, campaign);
+      case "scoring":
+        return (lead) => this.applyScoring(lead);
+      case "opportunities":
+        return (lead) => this.applyOpportunities(lead);
+      case "copy":
+        return (lead) => this.generateCopy(lead, campaign);
     }
   }
 
-  private async finalizeCampaign(
+  // Fase C.2 — processa um lote de discovery: pede ao provider exatamente
+  // `batchLimit` candidatos (nunca a campanha inteira de uma vez — é
+  // justamente isso que evita recriar o estouro de CPU observado com o lote
+  // único da Fase C.1). Ids determinísticos + onConflictDoNothing no insert
+  // tornam reentrega da mesma mensagem segura contra duplicação.
+  private async processDiscoveryBatch(
     campaign: Campaign,
-    totalJobs: number,
-  ): Promise<{ campaign: Campaign; jobs: ProspectingJob[]; leads: Lead[] }> {
-    const finishedJobs = await jobRepository.listByCampaign(campaign.id);
-    const completed = finishedJobs.filter((job) => job.state === "completed").length;
-    const progress = totalJobs ? Math.round((completed / totalJobs) * 100) : 0;
-    const updatedCampaign =
-      (await campaignRepository.update(campaign.id, { progress })) || campaign;
-    return {
-      campaign: updatedCampaign,
-      jobs: finishedJobs,
-      leads: await leadRepository.listByCampaign(campaign.id),
-    };
+    job: ProspectingJob,
+    offset: number,
+  ): Promise<{ nextOffset: number; isLastBatch: boolean }> {
+    const remaining = Math.max(0, campaign.quantity - offset);
+    const batchLimit = Math.min(PIPELINE_BATCH_SIZE, remaining);
+    if (batchLimit === 0) {
+      return { nextOffset: offset, isLastBatch: true };
+    }
+
+    const candidates = await this.discovery.discover({
+      segment: campaign.segment,
+      location: campaign.location,
+      radiusKm: campaign.radius,
+      limit: batchLimit,
+      offset,
+    });
+    const leadsToCreate = candidates.map((candidate, i) =>
+      candidateToLead(candidate, campaign, job.id, offset + i),
+    );
+    await leadRepositoryDirect.createMany(leadsToCreate);
+
+    const nextOffset = offset + candidates.length;
+    return { nextOffset, isLastBatch: nextOffset >= campaign.quantity };
   }
 
-  // Executa as etapas enrichment -> copy (jobs[1..7]) em sequência, pulando
-  // qualquer job já "completed". Usado tanto por runPipeline (jobs sempre
-  // "pending", nada é pulado) quanto por resumePipeline (retoma a partir da
-  // primeira etapa incompleta). Cada etapa individual já é idempotente por
-  // lead (guards nos métodos enrichLead/validateLead/auditLead/diagnoseLead/
-  // applyOpportunities/generateCopy), então reexecutar uma etapa presa em
-  // "running" não duplica dados de leads já processados nela.
-  private async runRemainingStages(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
-    const stages: { job: ProspectingJob; run: (leads: Lead[]) => Promise<void> }[] = [
-      {
-        job: jobs[1],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.enrichLead(lead, campaign)));
-        },
-      },
-      {
-        job: jobs[2],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.validateLead(lead)));
-        },
-      },
-      {
-        job: jobs[3],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.auditLead(lead)));
-        },
-      },
-      {
-        job: jobs[4],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.diagnoseLead(lead, campaign)));
-        },
-      },
-      {
-        job: jobs[5],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.applyScoring(lead)));
-        },
-      },
-      {
-        job: jobs[6],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.applyOpportunities(lead)));
-        },
-      },
-      {
-        job: jobs[7],
-        run: async (leads) => {
-          await Promise.all(leads.map((lead) => this.generateCopy(lead, campaign)));
-        },
-      },
-    ];
+  // Fase C.2 — processa um lote de leads já existentes numa etapa que não é
+  // discovery. Promise.allSettled (não Promise.all): a falha de um lead
+  // isolado fica registrada no log e não derruba o lote nem a campanha. Os
+  // guards já existentes em cada runOne (evidence.some(...)) tornam
+  // reprocessar um lead já concluído nesta etapa um no-op, então redeliver da
+  // mesma mensagem é seguro.
+  private async processLeadStageBatch(
+    campaign: Campaign,
+    job: ProspectingJob,
+    offset: number,
+    runOne: (lead: Lead) => Promise<void>,
+  ): Promise<{ nextOffset: number; isLastBatch: boolean }> {
+    const batch = await leadRepositoryDirect.listByCampaignPaged(
+      campaign.id,
+      offset,
+      PIPELINE_BATCH_SIZE,
+    );
+    const results = await Promise.allSettled(batch.map((lead) => runOne(lead)));
+    results.forEach((result, i) => {
+      if (result.status === "rejected") {
+        console.error(
+          `Falha ao processar o lead ${batch[i]!.id} na etapa ${job.stage} (campanha ${campaign.id}):`,
+          result.reason,
+        );
+      }
+    });
 
-    for (const { job, run } of stages) {
-      if (job.state === "completed") continue;
-      const current = await leadRepository.listByCampaign(campaign.id);
-      const ok = await this.runStage(job, current.length, async () => {
-        await run(current);
-        return current.length;
+    const nextOffset = offset + batch.length;
+    return { nextOffset, isLastBatch: batch.length < PIPELINE_BATCH_SIZE };
+  }
+
+  // Fase C.2 — ponto de entrada único chamado pelo consumer da fila para
+  // processar UM lote de UMA etapa de UMA campanha. Ordem deliberada dentro
+  // do bloco de sucesso: (1) faz o trabalho real do lote, (2) encadeia a
+  // próxima mensagem (próximo lote da mesma etapa, primeiro lote da próxima
+  // etapa, ou finaliza a campanha), (3) só então grava processed/state do job
+  // no D1. Se o passo 3 falhar depois do 2 já ter sido feito, a reentrega
+  // nativa da fila reprocessa a mensagem inteira — passos 1 e 2 são
+  // idempotentes/tolerantes a duplicata (guards de evidence, ids
+  // determinísticos, downstream que já checa job.state === "completed") — em
+  // vez de arriscar um job marcado "completed" sem nunca ter encadeado a
+  // próxima mensagem, o que travaria a campanha silenciosamente exigindo
+  // "Retomar processamento" manual.
+  async processStageBatch(campaign: Campaign, job: ProspectingJob, offset: number): Promise<void> {
+    if (job.state === "completed") {
+      // Mensagem duplicada/atrasada para uma etapa que já terminou (e já
+      // encadeou o que vinha depois) — no-op para não gerar mais uma
+      // mensagem redundante para a próxima etapa.
+      return;
+    }
+
+    await setJobState(job, "running");
+
+    let nextOffset: number;
+    let isLastBatch: boolean;
+    try {
+      if (job.stage === "discovery") {
+        ({ nextOffset, isLastBatch } = await this.processDiscoveryBatch(campaign, job, offset));
+      } else {
+        const runOne = this.stageRunner(job.stage, campaign);
+        ({ nextOffset, isLastBatch } = await this.processLeadStageBatch(
+          campaign,
+          job,
+          offset,
+          runOne,
+        ));
+      }
+    } catch (error) {
+      await setJobState(job, "failed", {
+        error: error instanceof Error ? error.message : `Falha na etapa ${job.stage}`,
       });
-      if (!ok) return;
+      console.error(
+        `Lote (offset ${offset}) da etapa ${job.stage} da campanha ${campaign.id} falhou:`,
+        error,
+      );
+      throw error;
+    }
+
+    if (isLastBatch) {
+      const nextStage = nextStageAfter(job.stage);
+      if (nextStage) {
+        await sendPipelineMessage({ campaignId: campaign.id, stage: nextStage, offset: 0 });
+      } else {
+        await campaignRepositoryDirect.update(campaign.id, { progress: 100 });
+      }
+      await jobRepositoryDirect.update(job.id, {
+        state: "completed",
+        processed: nextOffset,
+        total: campaign.quantity,
+      });
+    } else {
+      await sendPipelineMessage({ campaignId: campaign.id, stage: job.stage, offset: nextOffset });
+      await jobRepositoryDirect.update(job.id, { processed: nextOffset, total: campaign.quantity });
     }
   }
 
@@ -406,74 +481,30 @@ export class ProspectingService {
   // campaign/jobs (poucas escritas, sub-segundo). Chamada de dentro de
   // startCampaignFn, que retorna ao browser assim que isso termina; o
   // processamento pesado (discovery em diante) roda depois, em background,
-  // via runPipeline.
+  // via mensagens de fila (Fase C.2).
   async createCampaignAndJobs(
     input: Campaign,
   ): Promise<{ campaign: Campaign; jobs: ProspectingJob[] }> {
     const campaign: Campaign = { ...input, progress: 0 };
-    await campaignRepository.create(campaign);
+    await campaignRepositoryDirect.create(campaign);
 
     const jobs = defaultJobs(campaign);
-    await jobRepository.createMany(jobs);
+    await jobRepositoryDirect.createMany(jobs);
 
     return { campaign, jobs };
   }
 
-  // Fase C — parte longa de início de campanha (discovery + runRemainingStages
-  // + finalize). Roda inteiramente no servidor, disparada via
-  // request.waitUntil() em startCampaignFn — não é mais aguardada pelo
-  // browser, então não lança: qualquer erro fica registrado no estado do job
-  // (setJobState "failed") e no console do servidor; a UI reflete a falha
-  // lendo o ProcessingTask via polling, e "Retomar processamento" continua
-  // disponível para tentar de novo.
-  async runPipeline(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
-    const discoveryJob = jobs[0]!;
-    await setJobState(discoveryJob, "running", { attempts: 1 });
-
-    try {
-      const candidates = await this.discovery.discover({
-        segment: campaign.segment,
-        location: campaign.location,
-        radiusKm: campaign.radius,
-        limit: campaign.quantity,
-      });
-      const leads = candidates.map((candidate) =>
-        candidateToLead(candidate, campaign, discoveryJob.id),
-      );
-      await leadRepository.createMany(leads);
-      await setJobState(discoveryJob, "completed", {
-        processed: candidates.length,
-        total: campaign.quantity,
-        attempts: 1,
-      });
-    } catch (error) {
-      await setJobState(discoveryJob, "failed", {
-        error: error instanceof Error ? error.message : "Falha no discovery",
-        attempts: 1,
-      });
-      await campaignRepository.update(campaign.id, { progress: 0 });
-      console.error(`Discovery da campanha ${campaign.id} falhou:`, error);
-      return;
-    }
-
-    await this.runRemainingStages(campaign, jobs);
-    await this.finalizeCampaign(campaign, jobs.length);
-  }
-
   // Fase C — parte rápida de retomada: só valida que a campanha/jobs existem
-  // e devolve o estado atual. Chamada de dentro de resumeCampaignFn, que
-  // retorna ao browser assim que essa validação termina; o processamento
-  // (discovery se necessário + runRemainingStages) roda depois, em
-  // background, via resumePipeline.
+  // e devolve o estado atual. Chamada de dentro de resumeCampaignFn.
   async validateForResume(
     campaignId: string,
   ): Promise<{ campaign: Campaign; jobs: ProspectingJob[] }> {
-    const campaign = await campaignRepository.get(campaignId);
+    const campaign = await campaignRepositoryDirect.get(campaignId);
     if (!campaign) {
       throw new Error("Campanha não encontrada para retomar o processamento.");
     }
 
-    const jobs = await jobRepository.listByCampaign(campaignId);
+    const jobs = await jobRepositoryDirect.listByCampaign(campaignId);
     if (jobs.length < 8) {
       throw new Error("Jobs da campanha não encontrados ou incompletos para retomar.");
     }
@@ -481,82 +512,38 @@ export class ProspectingService {
     return { campaign, jobs };
   }
 
-  // Fase C — parte longa de retomada. Mesma lógica de sempre (discovery só
-  // reexecuta se não existir nenhum lead persistido; senão só normaliza o job
-  // de discovery e segue para runRemainingStages), agora rodando em
-  // background via request.waitUntil() em resumeCampaignFn — não lança, pelo
-  // mesmo motivo de runPipeline acima.
-  async resumePipeline(campaign: Campaign, jobs: ProspectingJob[]): Promise<void> {
-    const discoveryJob = jobs[0]!;
-    const existingLeads = await leadRepository.listByCampaign(campaign.id);
-
-    if (existingLeads.length === 0) {
-      await setJobState(discoveryJob, "running", { attempts: 1 });
-      try {
-        const candidates = await this.discovery.discover({
-          segment: campaign.segment,
-          location: campaign.location,
-          radiusKm: campaign.radius,
-          limit: campaign.quantity,
-        });
-        const leads = candidates.map((candidate) =>
-          candidateToLead(candidate, campaign, discoveryJob.id),
-        );
-        await leadRepository.createMany(leads);
-        await setJobState(discoveryJob, "completed", {
-          processed: candidates.length,
-          total: campaign.quantity,
-          attempts: 1,
-        });
-      } catch (error) {
-        await setJobState(discoveryJob, "failed", {
-          error: error instanceof Error ? error.message : "Falha no discovery",
-          attempts: 1,
-        });
-        console.error(`Discovery (retomada) da campanha ${campaign.id} falhou:`, error);
-        return;
+  // Fase C.2 — calcula de onde retomar a partir do estado real no D1: a
+  // primeira etapa (na ordem canônica) que ainda não está "completed", e o
+  // offset de onde continuar dentro dela. `job.processed` já é atualizado a
+  // cada lote bem-sucedido (nunca antes disso), então ele reflete exatamente
+  // até onde a etapa avançou de verdade — não precisa recontar leads/
+  // evidence para descobrir isso. Retorna null se todas as etapas já estão
+  // completas (nada para retomar).
+  computeResumePoint(jobs: ProspectingJob[]): { stage: PipelineStage; offset: number } | null {
+    for (const stage of PIPELINE_STAGES) {
+      const job = jobs.find((candidate) => candidate.stage === stage);
+      if (job && job.state !== "completed") {
+        return { stage, offset: job.processed };
       }
-    } else if (discoveryJob.state !== "completed") {
-      await setJobState(discoveryJob, "completed", {
-        processed: existingLeads.length,
-        total: campaign.quantity,
-      });
     }
-
-    await this.runRemainingStages(campaign, jobs);
-    await this.finalizeCampaign(campaign, jobs.length);
+    return null;
   }
 }
 
 export const prospectingService = new ProspectingService();
 
-// waitUntil não faz parte do tipo padrão de Request (lib.dom) — é uma
-// extensão que o preset cloudflare-module do Nitro anexa em runtime (ver
-// augmentReq em node_modules/nitro/dist/presets/cloudflare/runtime/
-// _module-handler.mjs), repassada por H3Event.waitUntil(). Presente em dev
-// (wrangler dev) e produção; ausente apenas fora do runtime Cloudflare (ex.:
-// bun run dev), caso em que o processamento em background já não teria D1
-// de qualquer forma — fallback é só não deixar o TypeError explodir.
-function runInBackground(task: Promise<void>) {
-  const request = getRequest() as Request & { waitUntil?: (promise: Promise<unknown>) => void };
-  request.waitUntil?.(task);
-}
-
-// Fase C — pontos de entrada chamados pelo browser. Cada um faz a parte
-// rápida de forma síncrona (retorna assim que ela termina) e agenda a parte
-// longa via request.waitUntil(), que mantém o Worker vivo depois da resposta
-// já ter sido enviada — o processamento continua no servidor mesmo que a aba
-// seja fechada/recarregada. Ver relatório da Fase C para a análise completa
-// de por que isso é seguro no runtime atual (sem Queues/Durable Objects).
+// Fase C.2 — pontos de entrada chamados pelo browser. Cada um faz a parte
+// rápida de forma síncrona (criar/validar campaign+jobs no D1) e enfileira só
+// a PRIMEIRA mensagem do processamento (um lote de uma etapa) em vez de
+// disparar o pipeline inteiro: o consumer da fila (ver
+// src/lib/nitro-plugins/prospecting-queue-consumer.ts) processa um lote por
+// invocação e se encadeia sozinho até a campanha terminar, com retry nativo
+// da Cloudflare Queue se alguma invocação falhar de verdade.
 const startCampaignFn = createServerFn({ method: "POST" })
   .validator((campaign: Campaign) => campaign)
   .handler(async ({ data }) => {
-    const { campaign, jobs } = await prospectingService.createCampaignAndJobs(data);
-    runInBackground(
-      prospectingService.runPipeline(campaign, jobs).catch((error) => {
-        console.error(`Pipeline em background da campanha ${campaign.id} falhou:`, error);
-      }),
-    );
+    const { campaign } = await prospectingService.createCampaignAndJobs(data);
+    await sendPipelineMessage({ campaignId: campaign.id, stage: "discovery", offset: 0 });
     return campaign;
   });
 
@@ -568,11 +555,14 @@ const resumeCampaignFn = createServerFn({ method: "POST" })
   .validator((campaignId: string) => campaignId)
   .handler(async ({ data: campaignId }) => {
     const { campaign, jobs } = await prospectingService.validateForResume(campaignId);
-    runInBackground(
-      prospectingService.resumePipeline(campaign, jobs).catch((error) => {
-        console.error(`Retomada em background da campanha ${campaign.id} falhou:`, error);
-      }),
-    );
+    const resumePoint = prospectingService.computeResumePoint(jobs);
+    if (resumePoint) {
+      await sendPipelineMessage({
+        campaignId: campaign.id,
+        stage: resumePoint.stage,
+        offset: resumePoint.offset,
+      });
+    }
     return campaign;
   });
 
@@ -580,10 +570,47 @@ export function resumeCampaignProcessing(campaignId: string): Promise<Campaign> 
   return resumeCampaignFn({ data: campaignId });
 }
 
+// Fase C.2 — chamado pelo consumer da fila (nunca pelo browser). A mensagem
+// só carrega campaignId+stage+offset; campaign/jobs são sempre lidos do D1
+// aqui, que continua sendo a fonte de verdade — nunca confiamos em dados
+// "carregados" dentro da própria mensagem. Se a campanha, os jobs ou o job da
+// etapa não existirem (não deveria acontecer: o producer sempre grava antes
+// de enfileirar), a mensagem é tratada como concluída (ack) em vez de tentar
+// de novo, já que reprocessar não resolveria uma pré-condição impossível.
+export async function processQueueMessage(message: ProspectingQueueMessage): Promise<void> {
+  const campaign = await campaignRepositoryDirect.get(message.campaignId);
+  if (!campaign) {
+    console.error(`Queue: campanha ${message.campaignId} não encontrada — mensagem descartada.`);
+    return;
+  }
+  const jobs = await jobRepositoryDirect.listByCampaign(message.campaignId);
+  if (jobs.length < 8) {
+    console.error(
+      `Queue: jobs incompletos para campanha ${message.campaignId} — mensagem descartada.`,
+    );
+    return;
+  }
+  const job = jobs.find((candidate) => candidate.stage === message.stage);
+  if (!job) {
+    console.error(
+      `Queue: job da etapa ${message.stage} não encontrado para campanha ${message.campaignId} — mensagem descartada.`,
+    );
+    return;
+  }
+  await prospectingService.processStageBatch(campaign, job, message.offset);
+}
+
+// Fase C.2 — progresso considera não só quantas etapas já terminaram, mas
+// também o quanto a etapa em andamento (ou travada em "failed", mantendo o
+// último processed conhecido) já avançou dentro de si mesma, usando
+// processed/total do próprio ProcessingTask — que agora é atualizado a cada
+// lote, não só ao final da etapa inteira.
 export async function getCampaignProgress(campaignId: string) {
   const jobs = await jobRepository.listByCampaign(campaignId);
   if (!jobs.length) return 0;
   const completed = jobs.filter((job) => job.state === "completed").length;
-  const running = jobs.filter((job) => job.state === "running").length;
-  return Math.min(100, Math.round(((completed + running * 0.5) / jobs.length) * 100));
+  const inProgress = jobs.find((job) => job.state === "running" || job.state === "failed");
+  const fraction =
+    inProgress && inProgress.total > 0 ? Math.min(1, inProgress.processed / inProgress.total) : 0;
+  return Math.min(100, Math.round(((completed + fraction) / jobs.length) * 100));
 }

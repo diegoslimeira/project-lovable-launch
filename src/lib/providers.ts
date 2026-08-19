@@ -123,7 +123,12 @@ export interface LeadDiscoveryProvider {
     segment: string;
     location: string;
     radiusKm: number;
+    // Fase C.2 — quantos candidatos gerar nesta chamada (o tamanho do lote
+    // atual, não o total da campanha) e a partir de qual posição, para que o
+    // orquestrador consiga pedir discovery em fatias pequenas em vez de gerar
+    // a campanha inteira em uma única invocação.
     limit: number;
+    offset?: number;
   }): Promise<CompanyCandidate[]>;
 }
 

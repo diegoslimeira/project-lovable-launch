@@ -44,6 +44,11 @@ export const PIPELINE_STAGES: ProspectingJob["stage"][] = [
   "copy",
 ];
 
+// Fase C.2 — tamanho do lote de leads processado por mensagem de fila, em
+// cada etapa (incluindo discovery). Único ponto de configuração: todo o
+// resto do pipeline importa esta constante em vez de repetir o número.
+export const PIPELINE_BATCH_SIZE = 5;
+
 export const defaultJobs = (campaign: Campaign): ProspectingJob[] =>
   PIPELINE_STAGES.map((stage) => ({
     id: `${campaign.id}-${stage}`,
