@@ -38,6 +38,13 @@ export type ContactCandidate = {
   role?: string;
   email?: string;
   phone?: string;
+  // Fase E.1 — site normalizado (domínio, sem protocolo/www/path) da
+  // EMPRESA, não do contato. Fica aqui em vez de um tipo novo porque
+  // ContactEnrichmentProvider já é o slot único de Enrichment no pipeline
+  // (mesmo padrão de troca mock/real usado no Discovery); um provider real
+  // como o Google Places pode preencher só phone/website e deixar
+  // name/role/email/linkedin/instagram ausentes, sem inventar decisor.
+  website?: string;
   linkedin?: string;
   instagram?: string;
   confidence: number;

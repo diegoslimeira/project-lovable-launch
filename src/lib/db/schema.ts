@@ -76,6 +76,12 @@ export const leads = sqliteTable("leads", {
     .notNull()
     .references(() => campaigns.id),
   sourceJobId: text("source_job_id"),
+  // Fase E.1 — id do lead na fonte real de discovery que o criou (ex.:
+  // Google Place ID). Necessário para reutilizar a mesma fonte em
+  // Enrichment (Place Details) sem repetir uma busca por texto. Genérico
+  // (não "google_place_id") porque uma fonte futura (CNPJ etc.) também
+  // poderia popular este campo com seu próprio identificador externo.
+  externalId: text("external_id"),
   company: text("company").notNull(),
   segment: text("segment").notNull(),
   city: text("city").notNull(),

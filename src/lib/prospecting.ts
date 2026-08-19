@@ -363,6 +363,10 @@ export type Lead = {
   id: string;
   campaignId?: string;
   sourceJobId?: string;
+  // Fase E.1 — id do lead na fonte real de discovery que o criou (ex.:
+  // Google Place ID), para reutilização em etapas futuras (ex.: Enrichment
+  // via Place Details) sem repetir uma busca por texto.
+  externalId?: string;
   company: string;
   segment: string;
   city: string;

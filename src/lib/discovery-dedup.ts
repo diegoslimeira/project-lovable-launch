@@ -17,7 +17,11 @@ import type { CompanyCandidate } from "./providers";
 // existente na campanha é o id determinístico + onConflictDoNothing em
 // createManyLeadsDirect (ver repositories/leads.ts).
 
-function normalizeDomain(website: string | undefined): string | undefined {
+// Fase E.1 — exportadas para reuso no Enrichment: `lead.website` já segue a
+// convenção de guardar só o domínio (a UI monta `https://${lead.website}`),
+// então a mesma normalização de dedup serve para "remover protocolo/www/
+// path" na hora de persistir um website enriquecido, sem duplicar a lógica.
+export function normalizeDomain(website: string | undefined): string | undefined {
   if (!website) return undefined;
   try {
     const withProtocol = /^https?:\/\//i.test(website) ? website : `https://${website}`;
@@ -27,7 +31,7 @@ function normalizeDomain(website: string | undefined): string | undefined {
   }
 }
 
-function normalizePhone(phone: string | undefined): string | undefined {
+export function normalizePhone(phone: string | undefined): string | undefined {
   if (!phone) return undefined;
   const digits = phone.replace(/\D/g, "");
   return digits.length >= 8 ? digits : undefined;

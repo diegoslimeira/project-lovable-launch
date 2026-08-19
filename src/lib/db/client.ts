@@ -35,6 +35,9 @@ type CloudflareEnv = {
   PROSPECTING_QUEUE: Queue<ProspectingQueueMessage>;
   GOOGLE_PLACES_API_KEY?: string;
   DISCOVERY_PROVIDER?: string;
+  // Fase E.1 — mesmo padrão do DISCOVERY_PROVIDER: seletor por env/var de
+  // deploy, nunca commitado, padrão ausente = mock.
+  ENRICHMENT_PROVIDER?: string;
 };
 
 function getCloudflareEnv(): CloudflareEnv {
@@ -72,13 +75,15 @@ export function getProspectingQueue(): Queue<ProspectingQueueMessage> {
 // fila) e nunca tem fallback hardcoded: se não estiver configurada, falha
 // explicitamente em vez de silenciosamente usar mock ou uma chave inválida.
 // Nunca logar o valor retornado por esta função.
+// Fase E.1 — a mesma secret é reutilizada pelo GooglePlacesEnrichmentProvider
+// (Place Details); nenhuma chave nova foi criada.
 export function getGooglePlacesApiKey(): string {
   const env = getCloudflareEnv();
   if (!env.GOOGLE_PLACES_API_KEY) {
     throw new Error(
       "GOOGLE_PLACES_API_KEY não configurada. Configure como secret do Worker " +
         "(wrangler secret put GOOGLE_PLACES_API_KEY) em produção, ou em .dev.vars " +
-        "(gitignorado) localmente, antes de usar o Google Places Discovery Provider.",
+        "(gitignorado) localmente, antes de usar um provider real do Google Places.",
     );
   }
   return env.GOOGLE_PLACES_API_KEY;
@@ -89,6 +94,11 @@ export function getGooglePlacesApiKey(): string {
 // o comportamento padrão seguro: mock.
 export function getDiscoveryProviderSelector(): string | undefined {
   return getCloudflareEnv().DISCOVERY_PROVIDER;
+}
+
+// Fase E.1 — mesmo padrão acima, para o provider de enrichment.
+export function getEnrichmentProviderSelector(): string | undefined {
+  return getCloudflareEnv().ENRICHMENT_PROVIDER;
 }
 
 // Stub server-side workspace resolution for this phase — never trust a

@@ -125,6 +125,12 @@ export class MockContactEnrichmentProvider implements ContactEnrichmentProvider 
       role,
       email: hasEmail ? `contato@${slug}.com.br` : undefined,
       phone: `+55 ${ddd} 9${line}-${Math.floor(1000 + Math.random() * 8999)}`,
+      // Fase E.1 — antes era um fallback aplicado incondicionalmente na
+      // orquestração (enrichLead), o que também rodaria com um provider
+      // real. Inventar um site é comportamento do mock, então mora aqui
+      // agora: só o mock "chuta" um domínio plausível quando a empresa
+      // ainda não tem site conhecido.
+      website: company.website ?? guessCompanyWebsite(company.name),
       linkedin: undefined,
       instagram: hasInstagram ? `@${slug}` : undefined,
       confidence: Math.round(55 + Math.random() * 40),

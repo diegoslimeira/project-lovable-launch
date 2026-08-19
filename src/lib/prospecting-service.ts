@@ -12,7 +12,8 @@ import {
 } from "./pipeline";
 import { mockLeadDiscoveryProvider } from "./providers/mock-discovery";
 import { googlePlacesDiscoveryProvider } from "./providers/google-places-discovery";
-import { guessCompanyWebsite, mockContactEnrichmentProvider } from "./providers/mock-enrichment";
+import { mockContactEnrichmentProvider } from "./providers/mock-enrichment";
+import { googlePlacesEnrichmentProvider } from "./providers/google-places-enrichment";
 import { mockContactValidationProvider } from "./providers/mock-validation";
 import { mockAdsProvider, mockDigitalAuditProvider } from "./providers/mock-audit";
 import { mockAIProvider } from "./providers/mock-diagnosis";
@@ -23,6 +24,7 @@ import { jobRepository, jobRepositoryDirect } from "./repositories/jobs";
 import { leadRepositoryDirect } from "./repositories/leads";
 import {
   getDiscoveryProviderSelector,
+  getEnrichmentProviderSelector,
   getProspectingQueue,
   type ProspectingQueueMessage,
 } from "./db/client";
@@ -31,6 +33,7 @@ import type {
   AdsProvider,
   AIProvider,
   CompanyCandidate,
+  ContactCandidate,
   ContactEnrichmentProvider,
   ContactValidationProvider,
   CopyProvider,
@@ -62,6 +65,10 @@ function candidateToLead(
     id: leadIdForIndex(campaign.id, index),
     campaignId: campaign.id,
     sourceJobId,
+    // Fase E.1 — persiste o id externo da fonte (ex.: Google placeId) de
+    // forma estruturada, para que etapas futuras (Enrichment via Place
+    // Details) consigam reutilizá-lo sem repetir uma busca por texto.
+    externalId: candidate.sources[0]?.externalId,
     company: candidate.name,
     segment: campaign.segment,
     city: candidate.city || campaign.location.split("/")[0]?.trim() || campaign.location,
@@ -102,6 +109,12 @@ async function setJobState(
   return jobRepositoryDirect.update(job.id, { ...patch, state });
 }
 
+// Fase E.1 — reconstrói sources[] a partir do externalId persistido no lead
+// (quando existir), para que etapas seguintes (Enrichment via Place Details)
+// consigam recuperar o placeId sem repetir uma Text Search. Assume "Google
+// Places" como a fonte porque, nesta fase, é a única fonte real que popula
+// externalId — quando uma segunda fonte real existir, isso precisa também
+// persistir/ler QUAL fonte originou o id, não só o id em si.
 function leadToCompanyCandidate(lead: Lead): CompanyCandidate {
   return {
     name: lead.company,
@@ -110,8 +123,37 @@ function leadToCompanyCandidate(lead: Lead): CompanyCandidate {
     category: lead.segment,
     website: lead.website,
     phone: lead.phone,
-    sources: [],
+    sources: lead.externalId
+      ? [
+          {
+            source: "Google Places",
+            externalId: lead.externalId,
+            collectedAt: new Date().toISOString(),
+            method: "lead-record",
+            confidence: 100,
+          },
+        ]
+      : [],
   };
+}
+
+// Fase E.1 — descreve genericamente o que foi encontrado no Enrichment, sem
+// assumir que o único resultado possível é um decisor: um provider real
+// (Google Places) pode preencher só telefone/site, o mock pode preencher
+// decisor+telefone+e-mail+instagram, e uma fonte futura pode preencher
+// qualquer subconjunto. Lista só os campos efetivamente presentes.
+function buildEnrichmentEvidenceValue(contact: ContactCandidate | undefined): string {
+  if (!contact) return "Nenhum dado adicional encontrado nesta etapa";
+  const parts: string[] = [];
+  if (contact.name)
+    parts.push(`decisor ${contact.name}${contact.role ? ` (${contact.role})` : ""}`);
+  if (contact.phone) parts.push("telefone");
+  if (contact.website) parts.push("site");
+  if (contact.email) parts.push("e-mail");
+  if (contact.instagram) parts.push("instagram");
+  return parts.length
+    ? `Dados encontrados: ${parts.join(", ")}`
+    : "Nenhum dado adicional encontrado nesta etapa";
 }
 
 function pickMicroInsight(diagnosis: Diagnosis): string {
@@ -160,13 +202,28 @@ export class ProspectingService {
     return this.discovery;
   }
 
+  // Fase E.1 — mesmo padrão do resolveDiscoveryProvider: mock por padrão,
+  // só troca para Google Places (Place Details) se ENRICHMENT_PROVIDER
+  // estiver explicitamente "google_places".
+  private resolveEnrichmentProvider(): ContactEnrichmentProvider {
+    const selector = getEnrichmentProviderSelector()?.trim().toLowerCase();
+    if (selector === "google_places") return googlePlacesEnrichmentProvider;
+    return this.enrichment;
+  }
+
   private async enrichLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Enriquecimento")) return;
-    const candidates = await this.enrichment.enrich(
+    const candidates = await this.resolveEnrichmentProvider().enrich(
       leadToCompanyCandidate(lead),
       campaign.decisionMakers,
     );
     const contact = candidates[0];
+    // Fase E.1 — antes havia um fallback incondicional de site
+    // (guessCompanyWebsite) aqui, que rodaria mesmo com um provider real —
+    // isso foi movido para dentro do MockContactEnrichmentProvider (é
+    // comportamento de mock, não de orquestração). Agora: sem candidato ou
+    // sem o campo, o valor existente do lead é preservado como está — nunca
+    // inventado nesta camada.
     await leadRepositoryDirect.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
       role: contact?.role ?? lead.role,
@@ -174,18 +231,20 @@ export class ProspectingService {
       whatsapp: contact?.phone ?? lead.whatsapp,
       email: contact?.email ?? lead.email,
       instagram: contact?.instagram ?? lead.instagram,
-      website: lead.website ?? guessCompanyWebsite(lead.company),
+      website: contact?.website ?? lead.website,
       confidence: contact?.confidence ?? lead.confidence,
       status: STAGE_TO_STATUS.enrichment ?? lead.status,
       evidence: [
         ...lead.evidence,
         {
           label: "Enriquecimento",
-          value: contact
-            ? `Decisor identificado: ${contact.name} (${contact.role ?? "cargo não informado"})`
-            : "Nenhum decisor localizado nesta etapa",
+          // Fase E.1 — antes assumia que o único dado possível era um
+          // decisor ("Decisor identificado..."); um provider real (Google
+          // Places) pode preencher só telefone/site, sem decisor nenhum.
+          // Descreve genericamente o que foi de fato encontrado.
+          value: buildEnrichmentEvidenceValue(contact),
           type: contact ? "Fato verificado" : "Não confirmado",
-          source: "Mock Enrichment Provider",
+          source: contact?.source.source ?? "Fonte não registrada",
         },
       ],
     });

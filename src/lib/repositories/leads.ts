@@ -225,6 +225,7 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
       id: row.id,
       campaignId: row.campaignId,
       sourceJobId: row.sourceJobId ?? undefined,
+      externalId: row.externalId ?? undefined,
       company: row.company,
       segment: row.segment,
       city: row.city,
