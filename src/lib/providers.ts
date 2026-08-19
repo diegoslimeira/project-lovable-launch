@@ -2,6 +2,10 @@ export type JobState = "pending" | "running" | "completed" | "failed" | "retryin
 
 export type SourceRecord = {
   source: string;
+  // Fase D — id do registro na própria fonte (ex.: Google Place ID). Chave
+  // externa principal para deduplicação e auditoria; opcional porque fontes
+  // futuras podem não ter um id estável, e o mock nunca tem.
+  externalId?: string;
   url?: string;
   collectedAt: string;
   method: string;
@@ -15,9 +19,17 @@ export type CompanyCandidate = {
   city?: string;
   state?: string;
   postalCode?: string;
+  // Fase D — coordenadas da fonte real, quando disponíveis. Não persistidas
+  // em Lead nesta fase (só usadas por providers/dedup); guardadas aqui para
+  // não precisar mudar a interface de novo quando forem úteis.
+  latitude?: number;
+  longitude?: number;
   phone?: string;
   website?: string;
   category?: string;
+  // Fase D — status operacional da fonte (ex.: "OPERATIONAL",
+  // "CLOSED_PERMANENTLY"), quando disponível. Informativo nesta fase.
+  businessStatus?: string;
   sources: SourceRecord[];
 };
 

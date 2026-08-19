@@ -24,7 +24,18 @@ export type ProspectingQueueMessage = {
 // {plugin.dev.mjs,_module-handler.mjs}. This is the framework's own sanctioned
 // way to reach bindings from arbitrary server code, so no custom
 // AsyncLocalStorage/context plumbing is needed here.
-type CloudflareEnv = { DB: D1Database; PROSPECTING_QUEUE: Queue<ProspectingQueueMessage> };
+// Fase D — GOOGLE_PLACES_API_KEY e DISCOVERY_PROVIDER nunca são declarados em
+// wrangler.jsonc (que é versionado): a chave é secret (`wrangler secret put`
+// em produção, `.dev.vars` — gitignorado — localmente) e o seletor de
+// provider é passado por variável de ambiente/flag de deploy, não commitado,
+// para que o comportamento padrão em qualquer checkout novo continue sendo o
+// mock (nunca disparar chamadas reais/pagas sem configuração explícita).
+type CloudflareEnv = {
+  DB: D1Database;
+  PROSPECTING_QUEUE: Queue<ProspectingQueueMessage>;
+  GOOGLE_PLACES_API_KEY?: string;
+  DISCOVERY_PROVIDER?: string;
+};
 
 function getCloudflareEnv(): CloudflareEnv {
   const env = (globalThis as { __env__?: CloudflareEnv }).__env__;
@@ -54,6 +65,30 @@ export function getProspectingQueue(): Queue<ProspectingQueueMessage> {
     );
   }
   return env.PROSPECTING_QUEUE;
+}
+
+// Fase D — a chave só existe no lado servidor (nunca no bundle do
+// frontend, já que este módulo só roda em server functions/consumer da
+// fila) e nunca tem fallback hardcoded: se não estiver configurada, falha
+// explicitamente em vez de silenciosamente usar mock ou uma chave inválida.
+// Nunca logar o valor retornado por esta função.
+export function getGooglePlacesApiKey(): string {
+  const env = getCloudflareEnv();
+  if (!env.GOOGLE_PLACES_API_KEY) {
+    throw new Error(
+      "GOOGLE_PLACES_API_KEY não configurada. Configure como secret do Worker " +
+        "(wrangler secret put GOOGLE_PLACES_API_KEY) em produção, ou em .dev.vars " +
+        "(gitignorado) localmente, antes de usar o Google Places Discovery Provider.",
+    );
+  }
+  return env.GOOGLE_PLACES_API_KEY;
+}
+
+// Fase D — seletor de provider de discovery, lido de env/var de deploy (não
+// commitado). Qualquer valor ausente ou diferente de "google_places" mantém
+// o comportamento padrão seguro: mock.
+export function getDiscoveryProviderSelector(): string | undefined {
+  return getCloudflareEnv().DISCOVERY_PROVIDER;
 }
 
 // Stub server-side workspace resolution for this phase — never trust a

@@ -11,15 +11,21 @@ import {
   type ProspectingJob,
 } from "./pipeline";
 import { mockLeadDiscoveryProvider } from "./providers/mock-discovery";
+import { googlePlacesDiscoveryProvider } from "./providers/google-places-discovery";
 import { guessCompanyWebsite, mockContactEnrichmentProvider } from "./providers/mock-enrichment";
 import { mockContactValidationProvider } from "./providers/mock-validation";
 import { mockAdsProvider, mockDigitalAuditProvider } from "./providers/mock-audit";
 import { mockAIProvider } from "./providers/mock-diagnosis";
 import { mockCopyProvider } from "./providers/mock-copy";
+import { dedupeCandidates } from "./discovery-dedup";
 import { campaignRepositoryDirect } from "./repositories/campaigns";
 import { jobRepository, jobRepositoryDirect } from "./repositories/jobs";
 import { leadRepositoryDirect } from "./repositories/leads";
-import { getProspectingQueue, type ProspectingQueueMessage } from "./db/client";
+import {
+  getDiscoveryProviderSelector,
+  getProspectingQueue,
+  type ProspectingQueueMessage,
+} from "./db/client";
 import type { Campaign, Lead } from "./prospecting";
 import type {
   AdsProvider,
@@ -70,9 +76,14 @@ function candidateToLead(
     evidence: [
       {
         label: "Descoberta",
-        value: "Empresa encontrada pelo Mock Discovery Provider",
+        // Fase D — antes fixo em "Mock Discovery Provider" independente da
+        // fonte real; agora reflete o provider que efetivamente encontrou a
+        // empresa (Google Places, mock, ou futuras fontes).
+        value: candidate.sources[0]
+          ? `Empresa encontrada via ${candidate.sources[0].source}`
+          : "Empresa encontrada (fonte não registrada)",
         type: "Fato verificado",
-        source: candidate.sources[0]?.source || "Mock Discovery Provider",
+        source: candidate.sources[0]?.source ?? "Fonte não registrada",
       },
     ],
     diagnosis: "Ainda não há diagnóstico: enrichment e auditoria não foram executados nesta fase.",
@@ -136,6 +147,18 @@ export class ProspectingService {
     private readonly ai: AIProvider = mockAIProvider,
     private readonly copy: CopyProvider = mockCopyProvider,
   ) {}
+
+  // Fase D — o discovery injetado no construtor continua sendo o padrão
+  // (mock, seguro para qualquer ambiente sem configuração extra). Só troca
+  // para Google Places se DISCOVERY_PROVIDER estiver explicitamente definido
+  // como "google_places" (variável de deploy, nunca commitada) — nunca por
+  // fallback silencioso, e nunca lido em tempo de import do módulo (os
+  // bindings do Worker só existem dentro do ciclo de request/queue).
+  private resolveDiscoveryProvider(): LeadDiscoveryProvider {
+    const selector = getDiscoveryProviderSelector()?.trim().toLowerCase();
+    if (selector === "google_places") return googlePlacesDiscoveryProvider;
+    return this.discovery;
+  }
 
   private async enrichLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Enriquecimento")) return;
@@ -354,6 +377,17 @@ export class ProspectingService {
   // justamente isso que evita recriar o estouro de CPU observado com o lote
   // único da Fase C.1). Ids determinísticos + onConflictDoNothing no insert
   // tornam reentrega da mesma mensagem segura contra duplicação.
+  //
+  // Fase D — duas mudanças para discovery real: (1) dedupeCandidates roda
+  // sobre os candidatos crus antes de virarem leads (uma fonte real pode, em
+  // tese, repetir a mesma empresa dentro do mesmo lote); os ids
+  // determinísticos continuam avançando pela contagem CRUA (candidates.length,
+  // não deduped.length) para manter a paginação do provider consistente
+  // entre chamadas — só o que é efetivamente persistido é que é filtrado.
+  // (2) isLastBatch agora também é true quando o provider devolve menos
+  // candidatos do que o lote pedia: uma fonte real pode ter menos empresas
+  // do que campaign.quantity, e isso não deve gerar um discovery "preso"
+  // tentando indefinidamente completar a cota com lotes vazios.
   private async processDiscoveryBatch(
     campaign: Campaign,
     job: ProspectingJob,
@@ -365,20 +399,24 @@ export class ProspectingService {
       return { nextOffset: offset, isLastBatch: true };
     }
 
-    const candidates = await this.discovery.discover({
+    const candidates = await this.resolveDiscoveryProvider().discover({
       segment: campaign.segment,
       location: campaign.location,
       radiusKm: campaign.radius,
       limit: batchLimit,
       offset,
     });
-    const leadsToCreate = candidates.map((candidate, i) =>
+    const deduped = dedupeCandidates(candidates);
+    const leadsToCreate = deduped.map((candidate, i) =>
       candidateToLead(candidate, campaign, job.id, offset + i),
     );
     await leadRepositoryDirect.createMany(leadsToCreate);
 
     const nextOffset = offset + candidates.length;
-    return { nextOffset, isLastBatch: nextOffset >= campaign.quantity };
+    return {
+      nextOffset,
+      isLastBatch: nextOffset >= campaign.quantity || candidates.length < batchLimit,
+    };
   }
 
   // Fase C.2 — processa um lote de leads já existentes numa etapa que não é
@@ -460,6 +498,20 @@ export class ProspectingService {
     }
 
     if (isLastBatch) {
+      // Fase D — se discovery terminou com menos leads do que a campanha
+      // pedia (fonte real esgotada, ex.: 37 encontrados de 50 solicitados),
+      // campaign.quantity passa a refletir o total REAL encontrado — nunca
+      // "completa" a diferença com dados inventados. Isso corrige, de uma
+      // vez, o "X/Y" da própria etapa de discovery e o total que TODAS as
+      // etapas seguintes (enrichment em diante) vão usar como meta, já que
+      // elas sempre leem campaign.quantity fresco do D1, não um valor fixo
+      // decidido na criação da campanha.
+      let effectiveQuantity = campaign.quantity;
+      if (job.stage === "discovery" && nextOffset !== campaign.quantity) {
+        effectiveQuantity = nextOffset;
+        await campaignRepositoryDirect.update(campaign.id, { quantity: effectiveQuantity });
+      }
+
       const nextStage = nextStageAfter(job.stage);
       if (nextStage) {
         await sendPipelineMessage({ campaignId: campaign.id, stage: nextStage, offset: 0 });
@@ -469,7 +521,7 @@ export class ProspectingService {
       await jobRepositoryDirect.update(job.id, {
         state: "completed",
         processed: nextOffset,
-        total: campaign.quantity,
+        total: effectiveQuantity,
       });
     } else {
       await sendPipelineMessage({ campaignId: campaign.id, stage: job.stage, offset: nextOffset });

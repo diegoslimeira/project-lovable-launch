@@ -50,4 +50,18 @@
       },
     ],
   },
+  // Fase D — discovery real via Google Places API (New). Deliberadamente NÃO
+  // declaradas aqui (nunca commitadas):
+  //   - GOOGLE_PLACES_API_KEY: secret. Local: crie um arquivo `.dev.vars`
+  //     (gitignorado, lido automaticamente por `wrangler dev`) com a linha
+  //     `GOOGLE_PLACES_API_KEY=...`. Remoto: `wrangler secret put
+  //     GOOGLE_PLACES_API_KEY` (fica criptografado no Worker, nunca aparece
+  //     em `wrangler.jsonc`/logs/dashboard).
+  //   - DISCOVERY_PROVIDER: não é secret, mas também não é declarada aqui de
+  //     propósito — o padrão ausente é sempre "mock" (nenhum checkout novo
+  //     ou deploy dispara chamadas reais/pagas sem configuração explícita).
+  //     Para usar Google Places: localmente, adicione
+  //     `DISCOVERY_PROVIDER=google_places` ao mesmo `.dev.vars`; remotamente,
+  //     use `wrangler deploy --var DISCOVERY_PROVIDER:google_places` num
+  //     deploy pontual em vez de alterar este arquivo.
 }
