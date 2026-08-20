@@ -376,6 +376,31 @@ export type Campaign = {
   progress: number;
 };
 
+// Fase F — id determinístico da campanha-sistema que agrupa leads cadastrados
+// manualmente (fora do fluxo de Discovery). Criada lazily (ver
+// ensureManualLeadsCampaign em manual-lead.ts) na primeira vez que um lead
+// manual é salvo. Excluída deliberadamente de listCampaignsDirect (nunca
+// aparece como campanha normal) e nunca ganha processingTasks (não participa
+// de cálculo de progresso — ver getCampaignProgress em prospecting-service.ts,
+// que já devolve 0 com segurança quando não há jobs).
+export const MANUAL_LEADS_CAMPAIGN_ID = "system-manual-leads";
+
+// Fase F — payload do formulário de cadastro manual de lead. `cnpj` aqui é
+// SEMPRE o valor bruto digitado pelo usuário (validado/normalizado em
+// createManualLeadDirect antes de virar Lead.manualCnpj) — nunca confundir
+// com um CNPJ já confirmado (isso vive em Lead.registryProfile).
+export type ManualLeadInput = {
+  company: string;
+  city: string;
+  state: string;
+  website?: string;
+  phone?: string;
+  cnpj?: string;
+  address?: string;
+  instagram?: string;
+  notes?: string;
+};
+
 export type Lead = {
   id: string;
   campaignId?: string;
@@ -396,6 +421,13 @@ export type Lead = {
   instagram?: string;
   website?: string;
   linkedin?: string;
+  // Fase F — cadastro manual. CNPJ digitado pelo usuário, ANTES de qualquer
+  // confirmação cadastral — deliberadamente separado de `registryProfile`
+  // (que só existe após um match CONFIRMADO via CnpjResolver +
+  // CompanyRegistryProvider). Nunca copiado automaticamente para lá.
+  manualCnpj?: string;
+  address?: string;
+  notes?: string;
   ads: boolean;
   score: number;
   confidence: number;

@@ -201,3 +201,24 @@ export function prioritizeLeads(leads: Lead[]) {
 export function isContactAllowed(lead: Lead, blockedIds: Set<string>) {
   return !blockedIds.has(lead.id) && lead.status !== "Desqualificado";
 }
+
+// Fase F — determina se um lead criado via "Salvar e analisar" ainda conta
+// como em processamento para a UI (badge "Analisando empresa..." + polling
+// leve). O único estado terminal considerado é "Aguardando aprovação" (fim
+// do estágio copy, ver STAGE_TO_STATUS acima) — todo status técnico
+// intermediário (Encontrado, Enriquecendo, Validando, Analisando,
+// Diagnóstico concluído, ou qualquer outro que vier a existir antes de
+// Aguardando aprovação) ainda conta como processamento em andamento. O
+// domínio não tem hoje um estado terminal de falha dedicado para o pipeline
+// técnico single-lead — por isso a única outra saída deste estado é o
+// timeout defensivo abaixo, que evita polling infinito caso uma mensagem da
+// fila seja perdida sem nunca chegar em Aguardando aprovação.
+export function isLeadStillProcessing(
+  status: LeadStatus,
+  startedAt: number,
+  now: number,
+  timeoutMs: number,
+): boolean {
+  if (status === "Aguardando aprovação") return false;
+  return now - startedAt < timeoutMs;
+}

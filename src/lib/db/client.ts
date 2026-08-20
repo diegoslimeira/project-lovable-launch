@@ -4,18 +4,33 @@ import type { ProspectingJob } from "../pipeline";
 import * as schema from "./schema";
 import { workspaces } from "./schema";
 
-// Fase C.2 — payload da fila de processamento de prospecção. Uma mensagem
-// representa "processe este lote (offset) desta etapa (stage) desta
-// campanha" — nunca carrega Campaign/Lead inteiros nem uma ação genérica
-// start/resume: o consumer sempre busca o estado atual no D1 (que continua
-// sendo a única fonte de verdade) e decide o que fazer a partir de
-// stage+offset. Isso é o que permite processar campanhas grandes em muitas
-// invocações pequenas em vez de uma única execução longa.
-export type ProspectingQueueMessage = {
+// Fase C.2 — payload da fila de processamento de prospecção, para campanhas
+// de Discovery em lote. Uma mensagem representa "processe este lote (offset)
+// desta etapa (stage) desta campanha" — nunca carrega Campaign/Lead inteiros
+// nem uma ação genérica start/resume: o consumer sempre busca o estado atual
+// no D1 (que continua sendo a única fonte de verdade) e decide o que fazer a
+// partir de stage+offset. Isso é o que permite processar campanhas grandes em
+// muitas invocações pequenas em vez de uma única execução longa.
+export type BatchStageMessage = {
+  kind: "batch";
   campaignId: string;
   stage: ProspectingJob["stage"];
   offset: number;
 };
+
+// Fase F — payload para processar UM lead fora do modelo de lote (ex.: lead
+// cadastrado manualmente, sem Discovery). Nunca usa processingTasks/offset:
+// não há "próximo lote" para 1 lead só — o progresso é o próprio
+// lead.evidence (mesmo guard por etapa que já existe em cada stage runner).
+// Encadeamento idêntico ao caminho em lote (self-chaining via nova mensagem
+// para a próxima etapa), só que por lead em vez de por campanha+offset.
+export type SingleLeadStageMessage = {
+  kind: "single-lead";
+  leadId: string;
+  stage: Exclude<ProspectingJob["stage"], "discovery">;
+};
+
+export type ProspectingQueueMessage = BatchStageMessage | SingleLeadStageMessage;
 
 // Nitro's cloudflare-module preset sets `globalThis.__env__` to the Workers
 // `env` on every request, identically in dev (via wrangler's local bindings

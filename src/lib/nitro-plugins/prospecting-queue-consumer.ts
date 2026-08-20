@@ -19,12 +19,16 @@ export default definePlugin((nitro) => {
   nitro.hooks.hook("cloudflare:queue", async ({ batch }) => {
     for (const message of batch.messages) {
       const body = message.body as ProspectingQueueMessage;
+      const context =
+        body.kind === "single-lead"
+          ? `lead manual ${body.leadId}, etapa ${body.stage}`
+          : `campanha ${body.campaignId}, etapa ${body.stage}, offset ${body.offset}`;
       try {
         await processQueueMessage(body);
         message.ack();
       } catch (error) {
         console.error(
-          `Falha ao processar mensagem da fila (campanha ${body.campaignId}, etapa ${body.stage}, offset ${body.offset}, tentativa ${message.attempts}):`,
+          `Falha ao processar mensagem da fila (${context}, tentativa ${message.attempts}):`,
           error,
         );
         message.retry();

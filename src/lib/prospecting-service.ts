@@ -133,6 +133,7 @@ function leadToCompanyCandidate(lead: Lead): CompanyCandidate {
     category: lead.segment,
     website: lead.website,
     phone: lead.phone,
+    address: lead.address,
     sources: lead.externalId
       ? [
           {
@@ -330,10 +331,22 @@ export class ProspectingService {
     // etapa (não é uma 9ª etapa do pipeline), usando o website recém-
     // enriquecido acima (ou o já existente no lead). Nunca falha o lead: ver
     // resolveCompanyRegistry, que captura toda exceção internamente.
-    const registryResult = await this.resolveCompanyRegistry({
-      ...leadToCompanyCandidate(lead),
-      website,
-    });
+    //
+    // Fase F — se o lead já tem um CNPJ informado manualmente (cadastro
+    // manual), não faz sentido o WebsiteCnpjResolver tentar redescobrir o
+    // que o usuário já disse — pula direto para uma evidência "Não
+    // confirmado" documentando o dado manual. Confirmação cadastral
+    // automática a partir desse CNPJ (CompanyRegistryProvider.lookup direto)
+    // é um passo futuro explicitamente fora de escopo agora: registryProfile
+    // nunca é preenchido aqui, só quando um CnpjResolver+confirmRegistryMatch
+    // confirmarem de verdade.
+    const registryResult = lead.manualCnpj
+      ? {
+          evidenceValue: `CNPJ informado manualmente: ${formatCnpj(lead.manualCnpj)} — confirmação cadastral automática ainda não implementada.`,
+          evidenceType: "Não confirmado" as const,
+          profile: undefined,
+        }
+      : await this.resolveCompanyRegistry({ ...leadToCompanyCandidate(lead), website });
 
     await leadRepositoryDirect.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
@@ -691,7 +704,12 @@ export class ProspectingService {
 
       const nextStage = nextStageAfter(job.stage);
       if (nextStage) {
-        await sendPipelineMessage({ campaignId: campaign.id, stage: nextStage, offset: 0 });
+        await sendPipelineMessage({
+          kind: "batch",
+          campaignId: campaign.id,
+          stage: nextStage,
+          offset: 0,
+        });
       } else {
         await campaignRepositoryDirect.update(campaign.id, { progress: 100 });
       }
@@ -701,8 +719,58 @@ export class ProspectingService {
         total: effectiveQuantity,
       });
     } else {
-      await sendPipelineMessage({ campaignId: campaign.id, stage: job.stage, offset: nextOffset });
+      await sendPipelineMessage({
+        kind: "batch",
+        campaignId: campaign.id,
+        stage: job.stage,
+        offset: nextOffset,
+      });
       await jobRepositoryDirect.update(job.id, { processed: nextOffset, total: campaign.quantity });
+    }
+  }
+
+  // Fase F — processa UMA etapa para UM lead fora do modelo de lote (lead
+  // cadastrado manualmente, sem Discovery). Reaproveita literalmente
+  // stageRunner/os mesmos métodos privados de estágio (enrichLead,
+  // validateLead, etc.) — nenhuma lógica de negócio duplicada. Nunca escreve
+  // em processingTasks: não há "próximo lote" para 1 lead, o progresso é o
+  // próprio lead.evidence (mesmo guard por etapa que cada stage runner já
+  // tem). Erros propagam (mesma filosofia do caminho em lote): o retry
+  // nativo da fila cobre falhas transitórias.
+  async processSingleLeadStage(
+    leadId: string,
+    stage: Exclude<PipelineStage, "discovery">,
+  ): Promise<void> {
+    const lead = await leadRepositoryDirect.get(leadId);
+    if (!lead) {
+      console.error(`Queue: lead manual ${leadId} não encontrado — mensagem descartada.`);
+      return;
+    }
+    if (!lead.campaignId) {
+      console.error(`Queue: lead manual ${leadId} sem campaignId — mensagem descartada.`);
+      return;
+    }
+    const campaign = await campaignRepositoryDirect.get(lead.campaignId);
+    if (!campaign) {
+      console.error(
+        `Queue: campanha ${lead.campaignId} do lead manual ${leadId} não encontrada — mensagem descartada.`,
+      );
+      return;
+    }
+
+    const runOne = this.stageRunner(stage, campaign);
+    await runOne(lead);
+
+    const next = nextStageAfter(stage);
+    if (next) {
+      // nextStageAfter nunca devolve "discovery" a partir de um estágio que
+      // já não é "discovery" (é sempre o próximo na ordem canônica,
+      // PIPELINE_STAGES) — seguro estreitar o tipo aqui.
+      await sendPipelineMessage({
+        kind: "single-lead",
+        leadId,
+        stage: next as Exclude<PipelineStage, "discovery">,
+      });
     }
   }
 
@@ -772,7 +840,12 @@ const startCampaignFn = createServerFn({ method: "POST" })
   .validator((campaign: Campaign) => campaign)
   .handler(async ({ data }) => {
     const { campaign } = await prospectingService.createCampaignAndJobs(data);
-    await sendPipelineMessage({ campaignId: campaign.id, stage: "discovery", offset: 0 });
+    await sendPipelineMessage({
+      kind: "batch",
+      campaignId: campaign.id,
+      stage: "discovery",
+      offset: 0,
+    });
     return campaign;
   });
 
@@ -787,6 +860,7 @@ const resumeCampaignFn = createServerFn({ method: "POST" })
     const resumePoint = prospectingService.computeResumePoint(jobs);
     if (resumePoint) {
       await sendPipelineMessage({
+        kind: "batch",
         campaignId: campaign.id,
         stage: resumePoint.stage,
         offset: resumePoint.offset,
@@ -799,14 +873,33 @@ export function resumeCampaignProcessing(campaignId: string): Promise<Campaign> 
   return resumeCampaignFn({ data: campaignId });
 }
 
-// Fase C.2 — chamado pelo consumer da fila (nunca pelo browser). A mensagem
-// só carrega campaignId+stage+offset; campaign/jobs são sempre lidos do D1
-// aqui, que continua sendo a fonte de verdade — nunca confiamos em dados
-// "carregados" dentro da própria mensagem. Se a campanha, os jobs ou o job da
-// etapa não existirem (não deveria acontecer: o producer sempre grava antes
-// de enfileirar), a mensagem é tratada como concluída (ack) em vez de tentar
-// de novo, já que reprocessar não resolveria uma pré-condição impossível.
+// Fase F — ponto de entrada para "Salvar e analisar" de um lead manual.
+// Único trabalho: enfileirar a PRIMEIRA mensagem do encadeamento single-lead,
+// começando em "enrichment" (Discovery já "aconteceu" — foi o cadastro
+// manual). O restante das etapas se autoencadeia via
+// processSingleLeadStage, mesmo padrão do caminho em lote.
+const analyzeManualLeadFn = createServerFn({ method: "POST" })
+  .validator((leadId: string) => leadId)
+  .handler(async ({ data: leadId }) => {
+    await sendPipelineMessage({ kind: "single-lead", leadId, stage: "enrichment" });
+  });
+
+export function analyzeManualLead(leadId: string): Promise<void> {
+  return analyzeManualLeadFn({ data: leadId });
+}
+
+// Fase C.2/F — chamado pelo consumer da fila (nunca pelo browser). Despacha
+// pelo `kind` da mensagem: "batch" é o caminho de campanhas de Discovery
+// (inalterado desde a Fase C.2); "single-lead" é o caminho novo da Fase F
+// (lead manual, sem processingTasks). campaign/jobs/lead são sempre lidos do
+// D1 aqui, que continua sendo a fonte de verdade — nunca confiamos em dados
+// "carregados" dentro da própria mensagem.
 export async function processQueueMessage(message: ProspectingQueueMessage): Promise<void> {
+  if (message.kind === "single-lead") {
+    await prospectingService.processSingleLeadStage(message.leadId, message.stage);
+    return;
+  }
+
   const campaign = await campaignRepositoryDirect.get(message.campaignId);
   if (!campaign) {
     console.error(`Queue: campanha ${message.campaignId} não encontrada — mensagem descartada.`);

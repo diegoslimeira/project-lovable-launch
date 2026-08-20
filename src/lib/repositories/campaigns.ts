@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { and, eq } from "drizzle-orm";
-import type { Campaign } from "../prospecting";
+import { and, eq, ne } from "drizzle-orm";
+import { MANUAL_LEADS_CAMPAIGN_ID, type Campaign } from "../prospecting";
 import { ensureWorkspace, getCurrentWorkspaceId, getDb } from "../db/client";
 import { campaigns } from "../db/schema";
 
@@ -39,10 +39,21 @@ function rowToCampaign(row: CampaignRow): Campaign {
   };
 }
 
+// Fase F — a campanha-sistema de leads manuais (MANUAL_LEADS_CAMPAIGN_ID)
+// nunca aparece aqui: não é uma campanha de Discovery de verdade (sem
+// progresso, sem jobs, sem sentido de "quantidade desejada"), então é
+// filtrada na origem — todo consumidor desta função (dashboard, listagem de
+// campanhas, etc.) fica automaticamente protegido sem precisar lembrar de
+// filtrar. getCampaignDirect(id) continua funcionando normalmente para quem
+// pedir essa campanha explicitamente por id (ex.: processamento de lead
+// manual, que precisa ler offer/objective/decisionMakers dela).
 async function listCampaignsDirect(): Promise<Campaign[]> {
   const db = getDb();
   const workspaceId = getCurrentWorkspaceId();
-  const rows = await db.select().from(campaigns).where(eq(campaigns.workspaceId, workspaceId));
+  const rows = await db
+    .select()
+    .from(campaigns)
+    .where(and(eq(campaigns.workspaceId, workspaceId), ne(campaigns.id, MANUAL_LEADS_CAMPAIGN_ID)));
   return rows.map(rowToCampaign);
 }
 

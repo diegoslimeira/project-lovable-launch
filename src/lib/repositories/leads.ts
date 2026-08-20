@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { ContactChannel, Lead, LeadStatus, ResponseClassification } from "../prospecting";
 import type { AuditDimension, AuditResult, Diagnosis, ServiceCategory } from "../providers";
 import { getCurrentWorkspaceId, getDb } from "../db/client";
@@ -252,6 +252,9 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
       instagram: row.instagram ?? undefined,
       website: row.website ?? undefined,
       linkedin: row.linkedin ?? undefined,
+      manualCnpj: row.manualCnpj ?? undefined,
+      address: row.address ?? undefined,
+      notes: row.notes ?? undefined,
       ads: row.ads,
       score: row.score,
       confidence: row.confidence,
@@ -610,10 +613,22 @@ async function createManyLeadsDirect(leadsToCreate: Lead[]): Promise<Lead[]> {
   return leadsToCreate;
 }
 
+// Fase F — ordenação geral por criação mais recente primeiro, para toda
+// listagem voltada à UI (Leads/Pipeline/Dashboard). Regra única, vale para
+// qualquer lead independente da origem (Discovery ou manual) — nenhum
+// tratamento especial por campo de origem. `listLeadsByCampaignPagedDirect`
+// (abaixo) é a exceção deliberada: continua ordenada por id, porque é usada
+// internamente pelo processamento em lote do pipeline, onde a ordem precisa
+// ser estável entre páginas para o offset funcionar corretamente — não é uma
+// listagem voltada ao usuário.
 async function listLeadsDirect(): Promise<Lead[]> {
   const db = getDb();
   const workspaceId = getCurrentWorkspaceId();
-  const rows = await db.select().from(leads).where(eq(leads.workspaceId, workspaceId));
+  const rows = await db
+    .select()
+    .from(leads)
+    .where(eq(leads.workspaceId, workspaceId))
+    .orderBy(desc(leads.createdAt));
   return assembleLeads(db, rows);
 }
 
@@ -623,7 +638,8 @@ async function listLeadsByCampaignDirect(campaignId: string): Promise<Lead[]> {
   const rows = await db
     .select()
     .from(leads)
-    .where(and(eq(leads.campaignId, campaignId), eq(leads.workspaceId, workspaceId)));
+    .where(and(eq(leads.campaignId, campaignId), eq(leads.workspaceId, workspaceId)))
+    .orderBy(desc(leads.createdAt));
   return assembleLeads(db, rows);
 }
 

@@ -94,6 +94,14 @@ export const leads = sqliteTable("leads", {
   instagram: text("instagram"),
   website: text("website"),
   linkedin: text("linkedin"),
+  // Fase F — cadastro manual de lead. CNPJ digitado pelo usuário ANTES de
+  // qualquer confirmação cadastral — deliberadamente separado de
+  // `company_registry_profiles`/`registryProfile` (que só existe após um
+  // match CONFIRMADO via CnpjResolver + CompanyRegistryProvider). Nunca
+  // copiado automaticamente para lá — ver enrichLead em prospecting-service.ts.
+  manualCnpj: text("manual_cnpj"),
+  address: text("address"),
+  notes: text("notes"),
   ads: integer("ads", { mode: "boolean" }).notNull().default(false),
   score: integer("score").notNull().default(0),
   confidence: integer("confidence").notNull().default(0),

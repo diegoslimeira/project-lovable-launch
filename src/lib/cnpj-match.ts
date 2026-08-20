@@ -17,7 +17,10 @@ const LEGAL_SUFFIX_PATTERN =
 // texto puro até virar RegExp em runtime.
 const COMBINING_MARKS_PATTERN = new RegExp("[\\u0300-\\u036f]", "g");
 
-function normalizeForComparison(text: string): string {
+// Exportada — reutilizada fora deste módulo (ex.: dedup de leads manuais em
+// manual-lead.ts, comparação de cidade) como utilitário genérico de
+// normalização de texto (acento/case/pontuação/sufixo societário).
+export function normalizeForComparison(text: string): string {
   return text
     .normalize("NFD")
     .replace(COMBINING_MARKS_PATTERN, "")
@@ -69,7 +72,10 @@ const STATE_NAME_TO_UF: Record<string, string> = {
 // para a sigla de 2 letras, para comparação — nunca lançamos se o valor não
 // bater com nada conhecido, só devolvemos o valor normalizado (maiúsculo, sem
 // acento) como fallback, para não quebrar em um formato inesperado.
-function normalizeStateToUf(state: string): string {
+// Exportada — reutilizada fora deste módulo (ex.: dedup de leads manuais em
+// manual-lead.ts) para comparar UF de forma consistente com o resto do
+// domínio.
+export function normalizeStateToUf(state: string): string {
   const normalized = normalizeForComparison(state);
   const bySiglaCandidate = normalized.toUpperCase();
   if (bySiglaCandidate.length === 2) return bySiglaCandidate;
@@ -175,6 +181,14 @@ export function nameSimilarity(leadCompanyName: string, registry: RegistryCompan
     ? distinctiveOverlapScore(leadCompanyName, registry.tradeName)
     : 0;
   return Math.max(legalScore, tradeScore);
+}
+
+// Fase F — mesma cobertura de tokens distintivos de distinctiveOverlapScore,
+// mas exposta para comparar dois nomes de EMPRESA (lead vs. lead) em vez de
+// lead vs. registro oficial — reutilizada pelo dedup de cadastro manual
+// (manual-lead.ts) em vez de duplicar a lógica de tagline/termo genérico.
+export function companyNameSimilarity(nameA: string, nameB: string): number {
+  return distinctiveOverlapScore(nameA, nameB);
 }
 
 // Pelo menos 70% dos tokens distintivos do MENOR nome (lead ou fonte oficial,
