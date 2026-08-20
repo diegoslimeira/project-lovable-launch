@@ -155,6 +155,82 @@ export interface ContactEnrichmentProvider {
   enrich(company: CompanyCandidate, decisionMakerRoles: string[]): Promise<ContactCandidate[]>;
 }
 
+// Fase E.2 — sinal individual observado perto de um candidato a CNPJ (ex.:
+// "rótulo CNPJ próximo", "contexto de terceiro: desenvolvido por"). `positive`
+// indica se o sinal reforça (true) ou enfraquece (false) a hipótese de que o
+// CNPJ pertence à própria empresa do lead, não a uma agência/plataforma/
+// fornecedor. Existe para tornar o scoring do CnpjResolver auditável — nunca
+// um número "mágico" sem explicação (ver relatório da Fase E.2).
+export type CnpjSignal = {
+  label: string;
+  positive: boolean;
+};
+
+// Um candidato a CNPJ encontrado durante a resolução. `context` é um trecho
+// CURTO e limitado ao redor da ocorrência (nunca a página inteira) — é o que
+// fica persistido para auditoria quando o match é aceito; nunca HTML bruto.
+export type CnpjCandidate = {
+  cnpj: string;
+  foundOnUrl: string;
+  context: string;
+  signals: CnpjSignal[];
+};
+
+export type CnpjResolutionOutcome = "high_confidence" | "ambiguous" | "not_found";
+
+// Resultado de CnpjResolver.resolve() — um candidato (quando houver) com
+// confiança CALCULADA SÓ A PARTIR DOS SINAIS DO PRÓPRIO SCAN (não sabe nada
+// sobre dados cadastrais oficiais; ver CompanyRegistryProvider). `cnpj` só é
+// preenchido quando outcome === "high_confidence". `candidates` sempre lista
+// TODOS os candidatos considerados (mesmo em ambiguous/not_found), para
+// auditoria.
+export type CnpjResolution = {
+  outcome: CnpjResolutionOutcome;
+  cnpj?: string;
+  confidence: number;
+  candidates: CnpjCandidate[];
+  reason: string;
+  source: string;
+};
+
+// Fase E.2 — responsabilidade única: descobrir QUAL CNPJ pertence a um lead.
+// Deliberadamente separado de CompanyRegistryProvider (que só busca dados
+// dado um CNPJ já resolvido) — ver relatório da Fase E.2 para a justificativa
+// completa da separação. Primeira implementação: WebsiteCnpjResolver.
+export interface CnpjResolver {
+  resolve(company: CompanyCandidate): Promise<CnpjResolution>;
+}
+
+// Fase E.2 — dado cadastral oficial de uma empresa, tal como devolvido pela
+// fonte de registro (ex.: OpenCNPJ). Contrato do provider: recebe um CNPJ JÁ
+// RESOLVIDO e só devolve dados oficiais — nunca decide qual CNPJ usar (isso é
+// responsabilidade do CnpjResolver, não deste tipo/provider). Campos
+// alinhados à lista explicitamente pedida (sem QSA/CPF/faturamento/dados
+// pessoais de sócio).
+export type RegistryCompanyData = {
+  cnpj: string;
+  legalName: string;
+  tradeName?: string;
+  registrationStatus: string;
+  primaryCnae?: string;
+  secondaryCnaes?: string[];
+  openedAt?: string;
+  size?: string;
+  legalNature?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+};
+
+export interface CompanyRegistryProvider {
+  // Retorna null quando o CNPJ é válido mas não foi encontrado na base da
+  // fonte consultada — nunca inventa dado. Lança erro em falha técnica real
+  // (rede, formato de resposta inesperado) para que o caller trate
+  // explicitamente, sem confundir "não encontrado" com "erro".
+  lookup(cnpj: string): Promise<RegistryCompanyData | null>;
+}
+
 export interface ContactValidationProvider {
   validate(input: {
     contact?: {

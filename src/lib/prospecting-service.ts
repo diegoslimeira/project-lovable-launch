@@ -18,21 +18,31 @@ import { mockContactValidationProvider } from "./providers/mock-validation";
 import { mockAdsProvider, mockDigitalAuditProvider } from "./providers/mock-audit";
 import { mockAIProvider } from "./providers/mock-diagnosis";
 import { mockCopyProvider } from "./providers/mock-copy";
+import { mockCnpjResolver } from "./providers/mock-cnpj-resolver";
+import { websiteCnpjResolver } from "./providers/website-cnpj-resolver";
+import { mockCompanyRegistryProvider } from "./providers/mock-company-registry";
+import { openCnpjRegistryProvider } from "./providers/open-cnpj-registry";
 import { dedupeCandidates } from "./discovery-dedup";
+import { formatCnpj } from "./cnpj";
+import { confirmRegistryMatch } from "./cnpj-match";
 import { campaignRepositoryDirect } from "./repositories/campaigns";
 import { jobRepository, jobRepositoryDirect } from "./repositories/jobs";
 import { leadRepositoryDirect } from "./repositories/leads";
 import {
+  getCnpjResolverProviderSelector,
+  getCompanyRegistryProviderSelector,
   getDiscoveryProviderSelector,
   getEnrichmentProviderSelector,
   getProspectingQueue,
   type ProspectingQueueMessage,
 } from "./db/client";
-import type { Campaign, Lead } from "./prospecting";
+import type { Campaign, CompanyRegistryProfile, EvidenceType, Lead } from "./prospecting";
 import type {
   AdsProvider,
   AIProvider,
+  CnpjResolver,
   CompanyCandidate,
+  CompanyRegistryProvider,
   ContactCandidate,
   ContactEnrichmentProvider,
   ContactValidationProvider,
@@ -188,6 +198,10 @@ export class ProspectingService {
     private readonly ads: AdsProvider = mockAdsProvider,
     private readonly ai: AIProvider = mockAIProvider,
     private readonly copy: CopyProvider = mockCopyProvider,
+    // Fase E.2 — rodam DENTRO da etapa de Enrichment (ver enrichLead), não
+    // são etapas novas do pipeline. Mesmo padrão mock-por-padrão dos demais.
+    private readonly cnpjResolver: CnpjResolver = mockCnpjResolver,
+    private readonly companyRegistry: CompanyRegistryProvider = mockCompanyRegistryProvider,
   ) {}
 
   // Fase D — o discovery injetado no construtor continua sendo o padrão
@@ -211,6 +225,92 @@ export class ProspectingService {
     return this.enrichment;
   }
 
+  // Fase E.2 — mesmo padrão: mock por padrão, só troca para o site scan
+  // real se CNPJ_RESOLVER_PROVIDER estiver explicitamente "website_scan".
+  private resolveCnpjResolver(): CnpjResolver {
+    const selector = getCnpjResolverProviderSelector()?.trim().toLowerCase();
+    if (selector === "website_scan") return websiteCnpjResolver;
+    return this.cnpjResolver;
+  }
+
+  private resolveCompanyRegistryProvider(): CompanyRegistryProvider {
+    const selector = getCompanyRegistryProviderSelector()?.trim().toLowerCase();
+    if (selector === "open_cnpj") return openCnpjRegistryProvider;
+    return this.companyRegistry;
+  }
+
+  // Fase E.2 — orquestra CnpjResolver -> CompanyRegistryProvider ->
+  // confirmRegistryMatch dentro da mesma etapa de Enrichment. Nunca lança:
+  // qualquer falha (rede, formato inesperado da fonte cadastral) vira um
+  // resultado "Não confirmado" nesta função, para que enrichLead nunca falhe
+  // a campanha por causa de CNPJ (regra explícita da Fase E.2) — só telefone/
+  // site (Google Places) seguem propagando erro, como antes.
+  private async resolveCompanyRegistry(company: CompanyCandidate): Promise<{
+    evidenceValue: string;
+    evidenceType: EvidenceType;
+    profile?: CompanyRegistryProfile;
+  }> {
+    if (!company.website) {
+      return {
+        evidenceValue: "Lead sem website — resolução de CNPJ não tentada.",
+        evidenceType: "Não confirmado",
+      };
+    }
+
+    try {
+      const resolution = await this.resolveCnpjResolver().resolve(company);
+
+      if (resolution.outcome === "not_found") {
+        return {
+          evidenceValue: `CNPJ não encontrado no site (${resolution.reason})`,
+          evidenceType: "Não confirmado",
+        };
+      }
+      if (resolution.outcome === "ambiguous" || !resolution.cnpj) {
+        return {
+          evidenceValue: `CNPJ ambíguo — não preenchido automaticamente (${resolution.reason})`,
+          evidenceType: "Não confirmado",
+        };
+      }
+
+      const registryData = await this.resolveCompanyRegistryProvider().lookup(resolution.cnpj);
+      if (!registryData) {
+        return {
+          evidenceValue: `CNPJ ${formatCnpj(resolution.cnpj)} encontrado no site, mas não localizado na base cadastral consultada.`,
+          evidenceType: "Não confirmado",
+        };
+      }
+
+      const match = confirmRegistryMatch(company, registryData);
+      if (!match.confirmed) {
+        return {
+          evidenceValue: `CNPJ ${formatCnpj(resolution.cnpj)} encontrado, mas os dados cadastrais não conferem com o lead (nome/cidade/UF divergentes) — não preenchido automaticamente.`,
+          evidenceType: "Não confirmado",
+        };
+      }
+
+      const profile: CompanyRegistryProfile = {
+        ...registryData,
+        matchConfidence: resolution.confidence,
+        matchSource: resolution.source,
+        matchEvidence: resolution.candidates,
+        registrySource: "OpenCNPJ",
+        registryFetchedAt: new Date().toISOString(),
+      };
+      return {
+        evidenceValue: `CNPJ confirmado: ${formatCnpj(resolution.cnpj)} — ${registryData.legalName}`,
+        evidenceType: "Fato verificado",
+        profile,
+      };
+    } catch (error) {
+      console.error(`Falha ao resolver identidade cadastral (CNPJ) do lead:`, error);
+      return {
+        evidenceValue: "Erro técnico ao tentar resolver CNPJ — dado não preenchido.",
+        evidenceType: "Não confirmado",
+      };
+    }
+  }
+
   private async enrichLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Enriquecimento")) return;
     const candidates = await this.resolveEnrichmentProvider().enrich(
@@ -224,6 +324,17 @@ export class ProspectingService {
     // comportamento de mock, não de orquestração). Agora: sem candidato ou
     // sem o campo, o valor existente do lead é preservado como está — nunca
     // inventado nesta camada.
+    const website = contact?.website ?? lead.website;
+
+    // Fase E.2 — CNPJ Resolution + Company Registry rodam dentro desta mesma
+    // etapa (não é uma 9ª etapa do pipeline), usando o website recém-
+    // enriquecido acima (ou o já existente no lead). Nunca falha o lead: ver
+    // resolveCompanyRegistry, que captura toda exceção internamente.
+    const registryResult = await this.resolveCompanyRegistry({
+      ...leadToCompanyCandidate(lead),
+      website,
+    });
+
     await leadRepositoryDirect.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
       role: contact?.role ?? lead.role,
@@ -231,9 +342,10 @@ export class ProspectingService {
       whatsapp: contact?.phone ?? lead.whatsapp,
       email: contact?.email ?? lead.email,
       instagram: contact?.instagram ?? lead.instagram,
-      website: contact?.website ?? lead.website,
+      website,
       confidence: contact?.confidence ?? lead.confidence,
       status: STAGE_TO_STATUS.enrichment ?? lead.status,
+      registryProfile: registryResult.profile,
       evidence: [
         ...lead.evidence,
         {
@@ -245,6 +357,12 @@ export class ProspectingService {
           value: buildEnrichmentEvidenceValue(contact),
           type: contact ? "Fato verificado" : "Não confirmado",
           source: contact?.source.source ?? "Fonte não registrada",
+        },
+        {
+          label: "CNPJ",
+          value: registryResult.evidenceValue,
+          type: registryResult.evidenceType,
+          source: registryResult.profile?.registrySource ?? "WebsiteCnpjResolver",
         },
       ],
     });

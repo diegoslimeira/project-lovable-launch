@@ -264,6 +264,56 @@ export const meetings = sqliteTable("meetings", {
   syncStatus: text("sync_status"),
 });
 
+// Fase E.2 — perfil cadastral oficial (CNPJ) do lead, quando resolvido com
+// segurança (ver CnpjResolver/CompanyRegistryProvider em src/lib/providers.ts
+// e src/lib/prospecting-service.ts). Tabela própria em vez de colunas em
+// `leads`: mantém `leads` enxuta, guarda os metadados de auditoria do match
+// (matchConfidence/matchSource/matchEvidence/registrySource/
+// registryFetchedAt) ao lado dos dados oficiais em vez de espalhá-los, e deixa
+// espaço para histórico/reconsulta futura sem precisar migrar de coluna solta
+// para tabela depois. Uma linha por lead nesta fase (upsert por leadId,
+// mesmo padrão de `negotiations` abaixo — sem unique constraint ainda).
+export const companyRegistryProfiles = sqliteTable("company_registry_profiles", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id),
+  leadId: text("lead_id")
+    .notNull()
+    .references(() => leads.id),
+  cnpj: text("cnpj").notNull(),
+  legalName: text("legal_name").notNull(),
+  tradeName: text("trade_name"),
+  registrationStatus: text("registration_status").notNull(),
+  primaryCnae: text("primary_cnae"),
+  secondaryCnaes: text("secondary_cnaes", { mode: "json" }).$type<string[]>(),
+  openedAt: text("opened_at"),
+  size: text("size"),
+  legalNature: text("legal_nature"),
+  address: text("address"),
+  city: text("city"),
+  state: text("state"),
+  postalCode: text("postal_code"),
+  // Metadados de AUDITORIA do match em si — nunca dado cadastral.
+  // matchEvidence guarda só os candidatos considerados (CNPJ + URL onde
+  // apareceu + trecho curto de contexto + sinais), nunca HTML bruto nem texto
+  // integral de página (ver CnpjCandidate em providers.ts).
+  matchConfidence: integer("match_confidence").notNull(),
+  matchSource: text("match_source").notNull(),
+  matchEvidence: text("match_evidence", { mode: "json" }).$type<
+    {
+      cnpj: string;
+      foundOnUrl: string;
+      context: string;
+      signals: { label: string; positive: boolean }[];
+    }[]
+  >(),
+  registrySource: text("registry_source").notNull(),
+  registryFetchedAt: text("registry_fetched_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 // Um registro de negociação ativa por lead nesta fase (sem unique constraint
 // ainda) — modelado como tabela própria, não JSON no lead, porque é a
 // entidade com maior chance de precisar de histórico de rodadas no futuro;

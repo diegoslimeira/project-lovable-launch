@@ -1,7 +1,9 @@
 import type {
   AuditResult,
+  CnpjCandidate,
   Copy,
   Diagnosis,
+  RegistryCompanyData,
   ServiceOpportunity,
   ValidationResult,
 } from "./providers";
@@ -344,6 +346,21 @@ export type LostDeal = {
   notes?: string;
 };
 
+// Fase E.2 — dado cadastral oficial persistido no lead, quando o CNPJ foi
+// resolvido com alta confiança (CnpjResolver) E confirmado por cruzamento com
+// a fonte oficial (CompanyRegistryProvider + confirmRegistryMatch). Os campos
+// de RegistryCompanyData são os dados cadastrais em si; os campos abaixo são
+// metadados de AUDITORIA do próprio match — nunca dado cadastral. matchEvidence
+// guarda só os candidatos considerados (CNPJ + URL onde apareceu + trecho
+// curto de contexto + sinais) — nunca HTML bruto nem texto integral de página.
+export type CompanyRegistryProfile = RegistryCompanyData & {
+  matchConfidence: number;
+  matchSource: string;
+  matchEvidence: CnpjCandidate[];
+  registrySource: string;
+  registryFetchedAt: string;
+};
+
 export type Campaign = {
   id: string;
   name: string;
@@ -394,6 +411,11 @@ export type Lead = {
   auditFindings?: AuditResult[];
   diagnosisReport?: Diagnosis;
   opportunities?: ServiceOpportunity[];
+  // Fase E.2 — presente só quando CNPJ Resolution + Company Registry
+  // encontraram e confirmaram um CNPJ com segurança. Ausência é um resultado
+  // válido (CNPJ não encontrado, ambíguo, ou lead sem website) — nunca é
+  // preenchido com dado inventado.
+  registryProfile?: CompanyRegistryProfile;
   copy?: Copy;
   contactAttempts?: ContactAttempt[];
   responses?: LeadResponse[];

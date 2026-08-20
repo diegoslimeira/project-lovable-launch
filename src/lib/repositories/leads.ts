@@ -5,6 +5,7 @@ import type { AuditDimension, AuditResult, Diagnosis, ServiceCategory } from "..
 import { getCurrentWorkspaceId, getDb } from "../db/client";
 import {
   auditFindings,
+  companyRegistryProfiles,
   contactAttempts,
   diagnoses,
   diagnosisSections,
@@ -150,27 +151,38 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
   if (!rows.length) return [];
   const leadIds = rows.map((row) => row.id);
 
-  const [auditRows, oppRows, contactRows, responseRows, diagnosisRows, negotiationRows] =
-    await Promise.all([
-      selectByIds(leadIds, (ids) =>
-        db.select().from(auditFindings).where(inArray(auditFindings.leadId, ids)),
-      ),
-      selectByIds(leadIds, (ids) =>
-        db.select().from(serviceOpportunities).where(inArray(serviceOpportunities.leadId, ids)),
-      ),
-      selectByIds(leadIds, (ids) =>
-        db.select().from(contactAttempts).where(inArray(contactAttempts.leadId, ids)),
-      ),
-      selectByIds(leadIds, (ids) =>
-        db.select().from(leadResponses).where(inArray(leadResponses.leadId, ids)),
-      ),
-      selectByIds(leadIds, (ids) =>
-        db.select().from(diagnoses).where(inArray(diagnoses.leadId, ids)),
-      ),
-      selectByIds(leadIds, (ids) =>
-        db.select().from(negotiations).where(inArray(negotiations.leadId, ids)),
-      ),
-    ]);
+  const [
+    auditRows,
+    oppRows,
+    contactRows,
+    responseRows,
+    diagnosisRows,
+    negotiationRows,
+    registryRows,
+  ] = await Promise.all([
+    selectByIds(leadIds, (ids) =>
+      db.select().from(auditFindings).where(inArray(auditFindings.leadId, ids)),
+    ),
+    selectByIds(leadIds, (ids) =>
+      db.select().from(serviceOpportunities).where(inArray(serviceOpportunities.leadId, ids)),
+    ),
+    selectByIds(leadIds, (ids) =>
+      db.select().from(contactAttempts).where(inArray(contactAttempts.leadId, ids)),
+    ),
+    selectByIds(leadIds, (ids) =>
+      db.select().from(leadResponses).where(inArray(leadResponses.leadId, ids)),
+    ),
+    selectByIds(leadIds, (ids) =>
+      db.select().from(diagnoses).where(inArray(diagnoses.leadId, ids)),
+    ),
+    selectByIds(leadIds, (ids) =>
+      db.select().from(negotiations).where(inArray(negotiations.leadId, ids)),
+    ),
+    // Fase E.2
+    selectByIds(leadIds, (ids) =>
+      db.select().from(companyRegistryProfiles).where(inArray(companyRegistryProfiles.leadId, ids)),
+    ),
+  ]);
 
   const auditByLead = groupBy(auditRows, (r) => r.leadId);
   const oppByLead = groupBy(oppRows, (r) => r.leadId);
@@ -178,6 +190,7 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
   const responseByLead = groupBy(responseRows, (r) => r.leadId);
   const diagnosisByLead = groupBy(diagnosisRows, (r) => r.leadId);
   const negotiationByLead = groupBy(negotiationRows, (r) => r.leadId);
+  const registryByLead = groupBy(registryRows, (r) => r.leadId);
 
   // Só a versão mais recente do diagnóstico de cada lead importa (mesma regra
   // do assembleLead anterior) — resolve isso em memória antes de buscar as
@@ -200,6 +213,7 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
     const contactRowsForLead = contactByLead.get(leadId) ?? [];
     const responseRowsForLead = responseByLead.get(leadId) ?? [];
     const negotiationRow = negotiationByLead.get(leadId)?.[0];
+    const registryRow = registryByLead.get(leadId)?.[0];
 
     let diagnosisReport: Diagnosis | undefined;
     const latest = latestDiagnosisByLead.get(leadId);
@@ -297,6 +311,28 @@ async function assembleLeads(db: Db, rows: LeadRow[]): Promise<Lead[]> {
             notes: negotiationRow.notes ?? undefined,
           }
         : undefined,
+      registryProfile: registryRow
+        ? {
+            cnpj: registryRow.cnpj,
+            legalName: registryRow.legalName,
+            tradeName: registryRow.tradeName ?? undefined,
+            registrationStatus: registryRow.registrationStatus,
+            primaryCnae: registryRow.primaryCnae ?? undefined,
+            secondaryCnaes: registryRow.secondaryCnaes ?? undefined,
+            openedAt: registryRow.openedAt ?? undefined,
+            size: registryRow.size ?? undefined,
+            legalNature: registryRow.legalNature ?? undefined,
+            address: registryRow.address ?? undefined,
+            city: registryRow.city ?? undefined,
+            state: registryRow.state ?? undefined,
+            postalCode: registryRow.postalCode ?? undefined,
+            matchConfidence: registryRow.matchConfidence,
+            matchSource: registryRow.matchSource,
+            matchEvidence: registryRow.matchEvidence ?? [],
+            registrySource: registryRow.registrySource,
+            registryFetchedAt: registryRow.registryFetchedAt,
+          }
+        : undefined,
       clientClosing: row.clientClosing ?? undefined,
       lostDeal: row.lostDeal ?? undefined,
       diagnosis: row.diagnosis,
@@ -323,6 +359,7 @@ const RICH_FIELDS = [
   "responses",
   "diagnosisReport",
   "negotiation",
+  "registryProfile",
 ] as const;
 type RichField = (typeof RICH_FIELDS)[number];
 
@@ -492,6 +529,56 @@ async function writeLeadChildren(
         nextStep: negotiation.nextStep,
         nextFollowUpAt: negotiation.nextFollowUpAt,
         notes: negotiation.notes,
+      });
+    }
+  }
+
+  // Fase E.2 — upsert por leadId, mesmo padrão de negotiation acima: um
+  // perfil por lead nesta fase. patch.registryProfile só chega definido
+  // quando CNPJ Resolution + Registry Lookup confirmaram um match seguro
+  // (ver resolveCompanyRegistry em prospecting-service.ts) — nunca escreve
+  // (nem apaga) nada quando ausente, então uma tentativa sem match nunca
+  // sobrescreve um perfil confirmado anteriormente.
+  if (patch.registryProfile !== undefined) {
+    const profile = patch.registryProfile;
+    const existing = await db
+      .select({ id: companyRegistryProfiles.id })
+      .from(companyRegistryProfiles)
+      .where(eq(companyRegistryProfiles.leadId, leadId));
+    const now = new Date().toISOString();
+    const values = {
+      cnpj: profile.cnpj,
+      legalName: profile.legalName,
+      tradeName: profile.tradeName,
+      registrationStatus: profile.registrationStatus,
+      primaryCnae: profile.primaryCnae,
+      secondaryCnaes: profile.secondaryCnaes,
+      openedAt: profile.openedAt,
+      size: profile.size,
+      legalNature: profile.legalNature,
+      address: profile.address,
+      city: profile.city,
+      state: profile.state,
+      postalCode: profile.postalCode,
+      matchConfidence: profile.matchConfidence,
+      matchSource: profile.matchSource,
+      matchEvidence: profile.matchEvidence,
+      registrySource: profile.registrySource,
+      registryFetchedAt: profile.registryFetchedAt,
+    };
+    if (existing.length > 0) {
+      await db
+        .update(companyRegistryProfiles)
+        .set({ ...values, updatedAt: now })
+        .where(eq(companyRegistryProfiles.leadId, leadId));
+    } else {
+      await db.insert(companyRegistryProfiles).values({
+        id: createRowId("registry"),
+        workspaceId,
+        leadId,
+        ...values,
+        createdAt: now,
+        updatedAt: now,
       });
     }
   }

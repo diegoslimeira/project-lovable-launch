@@ -38,6 +38,12 @@ type CloudflareEnv = {
   // Fase E.1 — mesmo padrão do DISCOVERY_PROVIDER: seletor por env/var de
   // deploy, nunca commitado, padrão ausente = mock.
   ENRICHMENT_PROVIDER?: string;
+  // Fase E.2 — mesmo padrão: dois seletores independentes (CnpjResolver e
+  // CompanyRegistryProvider são etapas conceitualmente distintas dentro do
+  // Enrichment, ver prospecting-service.ts), nunca commitados, padrão
+  // ausente = mock para ambos.
+  CNPJ_RESOLVER_PROVIDER?: string;
+  COMPANY_REGISTRY_PROVIDER?: string;
 };
 
 function getCloudflareEnv(): CloudflareEnv {
@@ -99,6 +105,17 @@ export function getDiscoveryProviderSelector(): string | undefined {
 // Fase E.1 — mesmo padrão acima, para o provider de enrichment.
 export function getEnrichmentProviderSelector(): string | undefined {
   return getCloudflareEnv().ENRICHMENT_PROVIDER;
+}
+
+// Fase E.2 — mesmo padrão, para CnpjResolver e CompanyRegistryProvider
+// (ambos rodam dentro da etapa de Enrichment, não são etapas novas do
+// pipeline).
+export function getCnpjResolverProviderSelector(): string | undefined {
+  return getCloudflareEnv().CNPJ_RESOLVER_PROVIDER;
+}
+
+export function getCompanyRegistryProviderSelector(): string | undefined {
+  return getCloudflareEnv().COMPANY_REGISTRY_PROVIDER;
 }
 
 // Stub server-side workspace resolution for this phase — never trust a

@@ -69,4 +69,16 @@
   //     DISCOVERY_PROVIDER:google_places --var
   //     ENRICHMENT_PROVIDER:google_places` num deploy pontual em vez de
   //     alterar este arquivo.
+  //
+  // Fase E.2 — CNPJ Resolution + Company Registry (rodam dentro da mesma
+  // etapa de Enrichment, não são etapas novas do pipeline):
+  //   - CNPJ_RESOLVER_PROVIDER: "website_scan" ativa o WebsiteCnpjResolver
+  //     (busca CNPJ nas páginas do próprio site do lead — sem chave/secret,
+  //     nenhuma API paga envolvida). Ausente = mock.
+  //   - COMPANY_REGISTRY_PROVIDER: "open_cnpj" ativa o OpenCnpjRegistryProvider
+  //     (api.opencnpj.org — sem chave, sem cadastro). Ausente = mock. Mesmo
+  //     padrão dos seletores acima: nunca commitado, sempre por variável de
+  //     deploy pontual (`wrangler deploy --var
+  //     CNPJ_RESOLVER_PROVIDER:website_scan --var
+  //     COMPANY_REGISTRY_PROVIDER:open_cnpj`) ou `.dev.vars` localmente.
 }
