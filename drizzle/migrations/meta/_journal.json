@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787025963087,
+      "tag": "0000_loose_blindfold",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787029064734,
+      "tag": "0001_flat_wasp",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787166916731,
+      "tag": "0002_equal_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787177731099,
+      "tag": "0003_add_company_registry_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787199887448,
+      "tag": "0004_add_manual_lead_fields",
+      "breakpoints": true
+    }
+  ]
+}

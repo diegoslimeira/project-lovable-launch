@@ -37,4 +37,10 @@ export default tseslint.config(
     },
   },
   eslintPluginPrettier,
+  {
+    files: ["src/routes/index.tsx", "src/routes/__root.tsx"],
+    rules: {
+      "prettier/prettier": "off",
+    },
+  },
 );
