@@ -141,24 +141,40 @@ function leadIdForManual(): string {
   return `manual-lead-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function createManualLeadDirect(input: ManualLeadInput): Promise<Lead> {
+// Fase F.1 — validação pura dos campos obrigatórios do cadastro manual,
+// separada de createManualLeadDirect para poder ser testada sem D1 (nada
+// aqui toca o banco). CNPJ passou a ser obrigatório (era opcional): é a
+// âncora de identidade que a confirmação cadastral (OpenCNPJ) e a
+// localização (Google Places) em enrichLead dependem para não inventar dado
+// — ver resolveManualLeadIdentity em prospecting-service.ts. Nunca
+// normaliza/preenche um campo ausente silenciosamente — lança com uma
+// mensagem compreensível para cada caso.
+export function validateManualLeadInput(input: ManualLeadInput): {
+  company: string;
+  city: string;
+  state: string;
+  manualCnpj: string;
+} {
   const company = input.company.trim();
   const city = input.city.trim();
   const state = input.state.trim();
-  if (!company || !city || !state) {
-    throw new Error("Nome da empresa, cidade e estado são obrigatórios.");
+  const cnpjInput = input.cnpj?.trim();
+  if (!company || !city || !state || !cnpjInput) {
+    throw new Error("Nome da empresa, cidade, estado e CNPJ são obrigatórios.");
   }
 
-  let manualCnpj: string | undefined;
-  if (input.cnpj?.trim()) {
-    const normalized = normalizeCnpj(input.cnpj.trim());
-    if (!isValidCnpj(normalized)) {
-      throw new Error(
-        `CNPJ informado (${formatCnpj(normalized)}) é inválido — dígitos verificadores não conferem.`,
-      );
-    }
-    manualCnpj = normalized;
+  const manualCnpj = normalizeCnpj(cnpjInput);
+  if (!isValidCnpj(manualCnpj)) {
+    throw new Error(
+      `CNPJ informado (${formatCnpj(manualCnpj)}) é inválido — dígitos verificadores não conferem.`,
+    );
   }
+
+  return { company, city, state, manualCnpj };
+}
+
+export async function createManualLeadDirect(input: ManualLeadInput): Promise<Lead> {
+  const { company, city, state, manualCnpj } = validateManualLeadInput(input);
 
   const campaign = await ensureManualLeadsCampaign();
 

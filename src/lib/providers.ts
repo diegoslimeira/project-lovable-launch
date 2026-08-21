@@ -231,6 +231,56 @@ export interface CompanyRegistryProvider {
   lookup(cnpj: string): Promise<RegistryCompanyData | null>;
 }
 
+// Fase F.1 — mesmo vocabulário de outcome/confidence/candidates/reason/source
+// já usado por CnpjResolution (Fase E.2), aplicado a um problema diferente:
+// dada uma empresa JÁ IDENTIFICADA cadastralmente (RegistryCompanyData vindo
+// de CompanyRegistryProvider.lookup — nunca texto livre digitado pelo
+// usuário), achar a entidade correspondente numa fonte de localização (ex.:
+// Google Places) e devolver um placeId só quando houver confiança suficiente.
+export type LocatorOutcome = "high_confidence" | "ambiguous" | "not_found";
+
+// Um candidato retornado pela busca do locator, já comparado contra a
+// identidade cadastral confirmada. nameSimilarityScore/cityMatches/
+// stateMatches/confirmed vêm de confirmRegistryMatch (cnpj-match.ts) — mesmo
+// limiar e mesma lógica já usados pela confirmação cadastral, nunca uma
+// segunda régua de comparação.
+export type LocatorCandidate = {
+  placeId: string;
+  name: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  nameSimilarityScore: number;
+  cityMatches: boolean;
+  stateMatches: boolean;
+  confirmed: boolean;
+};
+
+export type LocatorResolution = {
+  outcome: LocatorOutcome;
+  placeId?: string;
+  name?: string;
+  address?: string;
+  confidence: number;
+  candidates: LocatorCandidate[];
+  reason: string;
+  source: string;
+  // Só presente quando outcome === "high_confidence" — mesmo formato que
+  // GooglePlacesDiscoveryProvider já produz para leads de Discovery, para que
+  // leadToCompanyCandidate (prospecting-service.ts) trate um placeId vindo do
+  // locator exatamente como trataria um vindo do Discovery em massa.
+  sourceRecord?: SourceRecord;
+};
+
+// Responsabilidade única e deliberadamente separada de CompanyRegistryProvider
+// (que só sabe dado cadastral, nunca decide localização) e de
+// ContactEnrichmentProvider (que só enriquece um placeId JÁ conhecido em
+// telefone/site — nunca busca) — este é o elo que faltava entre os dois para
+// o cadastro manual. Primeira implementação real: GooglePlacesCompanyLocatorProvider.
+export interface CompanyLocatorProvider {
+  locate(registry: RegistryCompanyData): Promise<LocatorResolution>;
+}
+
 export interface ContactValidationProvider {
   validate(input: {
     contact?: {

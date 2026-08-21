@@ -59,6 +59,11 @@ type CloudflareEnv = {
   // ausente = mock para ambos.
   CNPJ_RESOLVER_PROVIDER?: string;
   COMPANY_REGISTRY_PROVIDER?: string;
+  // Fase F.1 — mesmo padrão: seletor por env/var de deploy, nunca commitado,
+  // padrão ausente = mock. Roda dentro da mesma etapa de Enrichment que os
+  // dois seletores acima (não é uma etapa nova do pipeline) — ver
+  // resolveManualLeadIdentity em prospecting-service.ts.
+  COMPANY_LOCATOR_PROVIDER?: string;
 };
 
 function getCloudflareEnv(): CloudflareEnv {
@@ -131,6 +136,11 @@ export function getCnpjResolverProviderSelector(): string | undefined {
 
 export function getCompanyRegistryProviderSelector(): string | undefined {
   return getCloudflareEnv().COMPANY_REGISTRY_PROVIDER;
+}
+
+// Fase F.1 — mesmo padrão acima, para o CompanyLocatorProvider.
+export function getCompanyLocatorProviderSelector(): string | undefined {
+  return getCloudflareEnv().COMPANY_LOCATOR_PROVIDER;
 }
 
 // Stub server-side workspace resolution for this phase — never trust a

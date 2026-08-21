@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { confirmRegistryMatch, nameSimilarity } from "./cnpj-match";
+import { confirmManualIdentity, confirmRegistryMatch, nameSimilarity } from "./cnpj-match";
 import type { CompanyCandidate, RegistryCompanyData } from "./providers";
 
 function company(overrides: Partial<CompanyCandidate> = {}): CompanyCandidate {
@@ -202,5 +202,114 @@ describe("confirmRegistryMatch", () => {
     expect(result.cityMatches).toBe(true);
     expect(result.stateMatches).toBe(true);
     expect(result.confirmed).toBe(true);
+  });
+});
+
+// Fase F.1.1 — regra específica de identidade para lead MANUAL, separada de
+// confirmRegistryMatch de propósito: aqui o CNPJ é a âncora primária (digitado
+// diretamente pelo usuário), não uma hipótese a corroborar por nome+cidade+UF.
+describe("confirmManualIdentity", () => {
+  test("tudo confere -> identity_confirmed, sem warnings", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime", city: "Curitiba", state: "PR" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed");
+    expect(result.warnings).toEqual([]);
+  });
+
+  // Caso real do teste remoto controlado (lead Jacomar): CNPJ válido e
+  // encontrado, mas razão social/cidade da sede cadastral divergem do que o
+  // usuário digitou (matriz em outro município). ANTES desta correção, isso
+  // era rejeitado por confirmRegistryMatch (nome+cidade+UF como bloqueio
+  // absoluto). Agora: identidade CONFIRMADA (com alerta) — nunca rejeitada
+  // só por isso.
+  test("[caso real Jacomar] nome comercial + cidade divergem, CNPJ confere -> identity_confirmed_with_warnings, NÃO rejected", () => {
+    const result = confirmManualIdentity(
+      "78413325000193",
+      { company: "Jacomar Supermercado", city: "Curitiba", state: "PR" },
+      registry({
+        cnpj: "78413325000193",
+        legalName: "SUPERMERCADO JACOMAR LTDA",
+        tradeName: undefined,
+        city: "São José dos Pinhais",
+        state: "PR",
+      }),
+    );
+    expect(result.outcome).toBe("identity_confirmed_with_warnings");
+    expect(result.warnings).toContain("cidade_diverge");
+    expect(result.warnings).not.toContain("uf_diverge");
+    expect(result.reason).not.toContain("rejeitad");
+  });
+
+  test("só nome diverge (cidade/UF conferem) -> warnings só com nome_diverge", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Nome Comercial Bem Diferente", city: "Curitiba", state: "PR" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed_with_warnings");
+    expect(result.warnings).toEqual(["nome_diverge"]);
+  });
+
+  test("só cidade diverge (matriz/filial em municípios diferentes) -> warnings só com cidade_diverge", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime", city: "Londrina", state: "PR" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed_with_warnings");
+    expect(result.warnings).toEqual(["cidade_diverge"]);
+  });
+
+  test("só UF diverge -> warnings só com uf_diverge", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime", city: "Curitiba", state: "SP" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed_with_warnings");
+    expect(result.warnings).toEqual(["uf_diverge"]);
+  });
+
+  test("cidade/UF ausentes no input -> não geram warning (sem dado para contradizer, mesma regra de confirmRegistryMatch)", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed");
+    expect(result.warnings).toEqual([]);
+  });
+
+  // Único bloqueio real desta função: o registro devolvido é de outro CNPJ.
+  test("registro devolvido é de CNPJ diferente do informado -> identity_rejected", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime", city: "Curitiba", state: "PR" },
+      registry({ cnpj: "99999999000191" }),
+    );
+    expect(result.outcome).toBe("identity_rejected");
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("CNPJ do registro com formatação diferente (não normalizado) mas mesmo número -> não rejeita por formato", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Clínica Sorriso Prime", city: "Curitiba", state: "PR" },
+      registry({ cnpj: "18.236.120/0001-58" }),
+    );
+    expect(result.outcome).not.toBe("identity_rejected");
+  });
+
+  test("nome E cidade E UF divergem simultaneamente -> ainda identity_confirmed_with_warnings, nunca rejected", () => {
+    const result = confirmManualIdentity(
+      "18236120000158",
+      { company: "Totalmente Outro Nome", city: "Manaus", state: "AM" },
+      registry(),
+    );
+    expect(result.outcome).toBe("identity_confirmed_with_warnings");
+    expect(result.warnings).toEqual(["nome_diverge", "cidade_diverge", "uf_diverge"]);
   });
 });

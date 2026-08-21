@@ -22,14 +22,21 @@ import { mockCnpjResolver } from "./providers/mock-cnpj-resolver";
 import { websiteCnpjResolver } from "./providers/website-cnpj-resolver";
 import { mockCompanyRegistryProvider } from "./providers/mock-company-registry";
 import { openCnpjRegistryProvider } from "./providers/open-cnpj-registry";
+import { mockCompanyLocatorProvider } from "./providers/mock-company-locator";
+import { googlePlacesCompanyLocatorProvider } from "./providers/google-places-company-locator";
 import { dedupeCandidates } from "./discovery-dedup";
 import { formatCnpj } from "./cnpj";
-import { confirmRegistryMatch } from "./cnpj-match";
+import {
+  confirmManualIdentity,
+  confirmRegistryMatch,
+  type ManualIdentityWarning,
+} from "./cnpj-match";
 import { campaignRepositoryDirect } from "./repositories/campaigns";
 import { jobRepository, jobRepositoryDirect } from "./repositories/jobs";
 import { leadRepositoryDirect } from "./repositories/leads";
 import {
   getCnpjResolverProviderSelector,
+  getCompanyLocatorProviderSelector,
   getCompanyRegistryProviderSelector,
   getDiscoveryProviderSelector,
   getEnrichmentProviderSelector,
@@ -42,6 +49,7 @@ import type {
   AIProvider,
   CnpjResolver,
   CompanyCandidate,
+  CompanyLocatorProvider,
   CompanyRegistryProvider,
   ContactCandidate,
   ContactEnrichmentProvider,
@@ -51,6 +59,7 @@ import type {
   DigitalAuditProvider,
   JobState,
   LeadDiscoveryProvider,
+  RegistryCompanyData,
 } from "./providers";
 
 type PipelineStage = ProspectingJob["stage"];
@@ -190,6 +199,203 @@ async function sendPipelineMessage(message: ProspectingQueueMessage): Promise<vo
   await getProspectingQueue().send(message);
 }
 
+// Fase F.1.1 — descreve as divergências de nome/cidade/UF encontradas por
+// confirmManualIdentity em texto legível, incluindo o valor informado E o
+// valor cadastral lado a lado — o alerta só é útil se explicar O QUE diverge,
+// não só que algo diverge.
+function describeManualIdentityWarnings(
+  warnings: ManualIdentityWarning[],
+  lead: Lead,
+  registryData: RegistryCompanyData,
+): string {
+  const parts: string[] = [];
+  if (warnings.includes("nome_diverge")) {
+    const officialName = registryData.tradeName
+      ? `${registryData.legalName} / ${registryData.tradeName}`
+      : registryData.legalName;
+    parts.push(`nome informado "${lead.company}" — cadastro oficial "${officialName}"`);
+  }
+  if (warnings.includes("cidade_diverge")) {
+    parts.push(`cidade informada "${lead.city}" — sede cadastral "${registryData.city}"`);
+  }
+  if (warnings.includes("uf_diverge")) {
+    parts.push(`UF informada "${lead.state}" — sede cadastral "${registryData.state}"`);
+  }
+  return `Divergências entre o cadastro informado e o cadastro oficial (matriz/filial em municípios diferentes é uma situação comum e não invalida o CNPJ): ${parts.join("; ")}.`;
+}
+
+// Fase F.1 — resolve identidade cadastral (CNPJ -> CompanyRegistryProvider) e
+// localização (CompanyLocatorProvider) para um lead manual, ANTES do
+// enrichment de contato rodar em enrichLead — só assim um provider real de
+// enrichment (Google Places) tem um placeId disponível para usar já nesta
+// mesma execução. Devolve uma CÓPIA de `lead` com externalId/registryProfile
+// já resolvidos (nunca escreve no D1 diretamente — quem persiste é o único
+// update no final de enrichLead) e as evidências desta sub-etapa. Nunca
+// lança: qualquer falha técnica vira "Não confirmado", mesma regra da Fase
+// E.2 (CNPJ/localização nunca derrubam o lead).
+//
+// Dois portões, cada um com seu próprio try/catch: uma falha técnica ao
+// localizar no Places não deve apagar uma identidade cadastral que já foi
+// confirmada com sucesso.
+//
+// Fase F.1.1 — princípio corrigido após achado real (lead Jacomar, teste
+// remoto controlado): para lead MANUAL, o CNPJ digitado é a âncora PRIMÁRIA
+// de identidade — não uma hipótese a corroborar por nome+cidade+UF (esse é
+// o papel de confirmRegistryMatch para o fluxo de Discovery, que continua
+// inalterado). Aqui usamos confirmManualIdentity (cnpj-match.ts): CNPJ
+// matematicamente válido + encontrado no OpenCNPJ já é
+// "cadastralmente identificado" (`identity_confirmed`/
+// `identity_confirmed_with_warnings`); nome/cidade/UF divergentes viram
+// alerta registrado como evidência, nunca bloqueio. Só bloqueia
+// (`identity_rejected`) quando o próprio elo CNPJ->registro está
+// comprometido (registro devolvido é de outro CNPJ). CNPJ inválido é
+// impossível de chegar aqui (validado na criação do lead); "não encontrado"
+// é tratado no bloco abaixo, antes de chamar confirmManualIdentity.
+//
+// Função de módulo (não método da classe) recebendo os providers já
+// resolvidos como parâmetros explícitos — não por conveniência estilística:
+// é o que permite testar esta orquestração inteira (registry -> confirmação
+// -> locator -> evidências) com providers falsos, sem D1 nem rede, sem
+// precisar instanciar ProspectingService (ver prospecting-service.test.ts).
+export async function resolveManualLeadIdentity(
+  lead: Lead,
+  registryProvider: CompanyRegistryProvider,
+  locatorProvider: CompanyLocatorProvider,
+): Promise<{ lead: Lead; evidence: Lead["evidence"] }> {
+  // Invariante: manualCnpj só existe já normalizado e com dígito verificador
+  // válido — garantido em createManualLeadDirect (manual-lead.ts) no momento
+  // da criação. Não revalida formato aqui.
+  const manualCnpj = lead.manualCnpj!;
+
+  let registryData;
+  try {
+    registryData = await registryProvider.lookup(manualCnpj);
+  } catch (error) {
+    console.error(`Falha ao consultar registro cadastral do CNPJ manual (lead ${lead.id}):`, error);
+    return {
+      lead,
+      evidence: [
+        {
+          label: "CNPJ",
+          value: "Erro técnico ao consultar a base cadastral — dado não preenchido.",
+          type: "Não confirmado",
+          source: "OpenCNPJ",
+        },
+      ],
+    };
+  }
+
+  if (!registryData) {
+    return {
+      lead,
+      evidence: [
+        {
+          label: "CNPJ",
+          value: `CNPJ ${formatCnpj(manualCnpj)} não encontrado na base cadastral consultada — verifique se o número está correto.`,
+          type: "Não confirmado",
+          source: "OpenCNPJ",
+        },
+      ],
+    };
+  }
+
+  const identity = confirmManualIdentity(manualCnpj, lead, registryData);
+  if (identity.outcome === "identity_rejected") {
+    return {
+      lead,
+      evidence: [
+        {
+          label: "CNPJ",
+          value: `CNPJ ${formatCnpj(manualCnpj)}: ${identity.reason}`,
+          type: "Não confirmado",
+          source: "OpenCNPJ",
+        },
+      ],
+    };
+  }
+
+  const profile: CompanyRegistryProfile = {
+    ...registryData,
+    // Fase F.1.1 — 100 nos dois casos (confirmed e confirmed_with_warnings):
+    // o elo CNPJ->registro é exato (chave de busca, não inferência fuzzy) em
+    // ambos — o que muda é só a consistência de nome/cidade/UF, registrada
+    // à parte como evidência de alerta, não diluída neste número.
+    matchConfidence: 100,
+    // Fase F.1 — "Manual" (não o nome de um CnpjResolver): não houve
+    // resolução de CNPJ nenhuma aqui, o usuário já informou o CNPJ pronto.
+    matchSource: "Manual",
+    matchEvidence: [],
+    registrySource: "OpenCNPJ",
+    registryFetchedAt: new Date().toISOString(),
+  };
+  const identityEvidence: Lead["evidence"] = [
+    {
+      label: "CNPJ",
+      value: `CNPJ confirmado: ${formatCnpj(manualCnpj)} — ${registryData.legalName}`,
+      type: "Fato verificado",
+      source: "OpenCNPJ",
+    },
+  ];
+  if (identity.outcome === "identity_confirmed_with_warnings") {
+    identityEvidence.push({
+      label: "Divergência cadastral",
+      value: describeManualIdentityWarnings(identity.warnings, lead, registryData),
+      type: "Não confirmado",
+      source: "OpenCNPJ",
+    });
+  }
+
+  try {
+    const locatorResult = await locatorProvider.locate(registryData);
+
+    if (locatorResult.outcome === "high_confidence" && locatorResult.placeId) {
+      return {
+        lead: { ...lead, externalId: locatorResult.placeId, registryProfile: profile },
+        evidence: [
+          ...identityEvidence,
+          {
+            label: "Localização",
+            value: `Empresa localizada no Google Places: ${locatorResult.name ?? registryData.tradeName ?? registryData.legalName}${locatorResult.address ? ` — ${locatorResult.address}` : ""}.`,
+            type: "Fato verificado",
+            source: locatorResult.source,
+          },
+        ],
+      };
+    }
+
+    const locatorMessage =
+      locatorResult.outcome === "ambiguous"
+        ? `Mais de uma empresa correspondente encontrada no Google Places — não associado automaticamente (${locatorResult.reason})`
+        : `Empresa não localizada no Google Places (${locatorResult.reason})`;
+    return {
+      lead: { ...lead, registryProfile: profile },
+      evidence: [
+        ...identityEvidence,
+        {
+          label: "Localização",
+          value: locatorMessage,
+          type: "Não confirmado",
+          source: locatorResult.source,
+        },
+      ],
+    };
+  } catch (error) {
+    console.error(`Falha ao localizar empresa no Google Places (lead ${lead.id}):`, error);
+    return {
+      lead: { ...lead, registryProfile: profile },
+      evidence: [
+        ...identityEvidence,
+        {
+          label: "Localização",
+          value: "Erro técnico ao tentar localizar a empresa — dado não preenchido.",
+          type: "Não confirmado",
+          source: "Google Places",
+        },
+      ],
+    };
+  }
+}
+
 export class ProspectingService {
   constructor(
     private readonly discovery: LeadDiscoveryProvider = mockLeadDiscoveryProvider,
@@ -203,6 +409,10 @@ export class ProspectingService {
     // são etapas novas do pipeline. Mesmo padrão mock-por-padrão dos demais.
     private readonly cnpjResolver: CnpjResolver = mockCnpjResolver,
     private readonly companyRegistry: CompanyRegistryProvider = mockCompanyRegistryProvider,
+    // Fase F.1 — mesmo padrão mock-por-padrão. Roda dentro do Enrichment,
+    // só para lead manual (ver resolveManualLeadIdentity) — não é uma etapa
+    // nova do pipeline nem afeta o caminho de Discovery em lote.
+    private readonly companyLocator: CompanyLocatorProvider = mockCompanyLocatorProvider,
   ) {}
 
   // Fase D — o discovery injetado no construtor continua sendo o padrão
@@ -238,6 +448,14 @@ export class ProspectingService {
     const selector = getCompanyRegistryProviderSelector()?.trim().toLowerCase();
     if (selector === "open_cnpj") return openCnpjRegistryProvider;
     return this.companyRegistry;
+  }
+
+  // Fase F.1 — mesmo padrão: mock por padrão, só troca para o Google Places
+  // real se COMPANY_LOCATOR_PROVIDER estiver explicitamente "google_places".
+  private resolveCompanyLocatorProvider(): CompanyLocatorProvider {
+    const selector = getCompanyLocatorProviderSelector()?.trim().toLowerCase();
+    if (selector === "google_places") return googlePlacesCompanyLocatorProvider;
+    return this.companyLocator;
   }
 
   // Fase E.2 — orquestra CnpjResolver -> CompanyRegistryProvider ->
@@ -314,8 +532,26 @@ export class ProspectingService {
 
   private async enrichLead(lead: Lead, campaign: Campaign) {
     if (lead.evidence.some((item) => item.label === "Enriquecimento")) return;
+
+    // Fase F.1 — para lead manual, resolve identidade (CNPJ) e localização
+    // (Google Places) ANTES do enrichment de contato: só assim um provider
+    // real de enrichment tem um placeId para usar já nesta mesma execução.
+    // Leads de Discovery já chegam com externalId desde a criação
+    // (candidateToLead) — nada muda para eles, workingLead === lead.
+    let workingLead = lead;
+    let identityEvidence: Lead["evidence"] = [];
+    if (lead.manualCnpj) {
+      const resolved = await resolveManualLeadIdentity(
+        lead,
+        this.resolveCompanyRegistryProvider(),
+        this.resolveCompanyLocatorProvider(),
+      );
+      workingLead = resolved.lead;
+      identityEvidence = resolved.evidence;
+    }
+
     const candidates = await this.resolveEnrichmentProvider().enrich(
-      leadToCompanyCandidate(lead),
+      leadToCompanyCandidate(workingLead),
       campaign.decisionMakers,
     );
     const contact = candidates[0];
@@ -325,28 +561,56 @@ export class ProspectingService {
     // comportamento de mock, não de orquestração). Agora: sem candidato ou
     // sem o campo, o valor existente do lead é preservado como está — nunca
     // inventado nesta camada.
-    const website = contact?.website ?? lead.website;
+    const website = contact?.website ?? workingLead.website;
 
-    // Fase E.2 — CNPJ Resolution + Company Registry rodam dentro desta mesma
-    // etapa (não é uma 9ª etapa do pipeline), usando o website recém-
-    // enriquecido acima (ou o já existente no lead). Nunca falha o lead: ver
+    const enrichmentEvidence: Lead["evidence"][number] = {
+      label: "Enriquecimento",
+      // Fase E.1 — antes assumia que o único dado possível era um decisor
+      // ("Decisor identificado..."); um provider real (Google Places) pode
+      // preencher só telefone/site, sem decisor nenhum. Descreve
+      // genericamente o que foi de fato encontrado.
+      value: buildEnrichmentEvidenceValue(contact),
+      type: contact ? "Fato verificado" : "Não confirmado",
+      source: contact?.source.source ?? "Fonte não registrada",
+    };
+
+    // Fase E.2 — para lead de Discovery (não-manual), CNPJ Resolution +
+    // Company Registry continuam rodando exatamente como antes desta fase:
+    // WebsiteCnpjResolver -> CompanyRegistryProvider -> confirmRegistryMatch,
+    // usando o website recém-enriquecido acima. Nunca falha o lead: ver
     // resolveCompanyRegistry, que captura toda exceção internamente.
     //
-    // Fase F — se o lead já tem um CNPJ informado manualmente (cadastro
-    // manual), não faz sentido o WebsiteCnpjResolver tentar redescobrir o
-    // que o usuário já disse — pula direto para uma evidência "Não
-    // confirmado" documentando o dado manual. Confirmação cadastral
-    // automática a partir desse CNPJ (CompanyRegistryProvider.lookup direto)
-    // é um passo futuro explicitamente fora de escopo agora: registryProfile
-    // nunca é preenchido aqui, só quando um CnpjResolver+confirmRegistryMatch
-    // confirmarem de verdade.
-    const registryResult = lead.manualCnpj
-      ? {
-          evidenceValue: `CNPJ informado manualmente: ${formatCnpj(lead.manualCnpj)} — confirmação cadastral automática ainda não implementada.`,
-          evidenceType: "Não confirmado" as const,
-          profile: undefined,
-        }
-      : await this.resolveCompanyRegistry({ ...leadToCompanyCandidate(lead), website });
+    // Fase F.1 — para lead manual, a identidade já foi inteiramente resolvida
+    // acima (resolveManualLeadIdentity) — nada a fazer aqui além de montar as
+    // evidências na ordem em que de fato aconteceram: identidade/localização
+    // primeiro (é o que aconteceu antes do enrichment de contato rodar),
+    // Enriquecimento depois.
+    let newEvidence: Lead["evidence"];
+    // Fase F.1 — para lead manual, workingLead.registryProfile já foi
+    // resolvido acima (resolveManualLeadIdentity). Para lead de Discovery,
+    // registryProfile continua vindo do resultado FRESCO de
+    // resolveCompanyRegistry computado agora — nunca de lead.registryProfile
+    // (que nesta etapa ainda não existe, é sempre undefined antes do
+    // Enrichment rodar pela primeira vez).
+    let registryProfile = workingLead.registryProfile;
+    if (lead.manualCnpj) {
+      newEvidence = [...identityEvidence, enrichmentEvidence];
+    } else {
+      const registryResult = await this.resolveCompanyRegistry({
+        ...leadToCompanyCandidate(lead),
+        website,
+      });
+      registryProfile = registryResult.profile;
+      newEvidence = [
+        enrichmentEvidence,
+        {
+          label: "CNPJ",
+          value: registryResult.evidenceValue,
+          type: registryResult.evidenceType,
+          source: registryResult.profile?.registrySource ?? "WebsiteCnpjResolver",
+        },
+      ];
+    }
 
     await leadRepositoryDirect.update(lead.id, {
       decisionMaker: contact?.name ?? lead.decisionMaker,
@@ -356,28 +620,11 @@ export class ProspectingService {
       email: contact?.email ?? lead.email,
       instagram: contact?.instagram ?? lead.instagram,
       website,
+      externalId: workingLead.externalId,
       confidence: contact?.confidence ?? lead.confidence,
       status: STAGE_TO_STATUS.enrichment ?? lead.status,
-      registryProfile: registryResult.profile,
-      evidence: [
-        ...lead.evidence,
-        {
-          label: "Enriquecimento",
-          // Fase E.1 — antes assumia que o único dado possível era um
-          // decisor ("Decisor identificado..."); um provider real (Google
-          // Places) pode preencher só telefone/site, sem decisor nenhum.
-          // Descreve genericamente o que foi de fato encontrado.
-          value: buildEnrichmentEvidenceValue(contact),
-          type: contact ? "Fato verificado" : "Não confirmado",
-          source: contact?.source.source ?? "Fonte não registrada",
-        },
-        {
-          label: "CNPJ",
-          value: registryResult.evidenceValue,
-          type: registryResult.evidenceType,
-          source: registryResult.profile?.registrySource ?? "WebsiteCnpjResolver",
-        },
-      ],
+      registryProfile,
+      evidence: [...lead.evidence, ...newEvidence],
     });
   }
 

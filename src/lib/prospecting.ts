@@ -393,9 +393,14 @@ export type ManualLeadInput = {
   company: string;
   city: string;
   state: string;
+  // Fase F.1 — obrigatório: passa a ser a âncora de identidade do cadastro
+  // manual (confirmada via CompanyRegistryProvider antes de qualquer
+  // localização/enrichment real — ver resolveManualLeadIdentity em
+  // prospecting-service.ts). Formato/dígitos verificadores continuam
+  // validados em createManualLeadDirect (manual-lead.ts).
+  cnpj: string;
   website?: string;
   phone?: string;
-  cnpj?: string;
   address?: string;
   instagram?: string;
   notes?: string;

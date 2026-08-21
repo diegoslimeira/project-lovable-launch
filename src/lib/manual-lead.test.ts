@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findPossibleDuplicates } from "./manual-lead";
+import { findPossibleDuplicates, validateManualLeadInput } from "./manual-lead";
 import type { Lead, ManualLeadInput } from "./prospecting";
 
 function lead(overrides: Partial<Lead> = {}): Lead {
@@ -25,8 +25,18 @@ function lead(overrides: Partial<Lead> = {}): Lead {
   };
 }
 
+// Fase F.1 — cnpj passou a ser obrigatório em ManualLeadInput. Nenhum dos
+// testes de dedup abaixo depende deste valor específico (os leads `existing`
+// só carregam manualCnpj quando o teste explicitamente passa esse override) —
+// é só para satisfazer o tipo com um CNPJ de formato/dígito válido.
 function input(overrides: Partial<ManualLeadInput> = {}): ManualLeadInput {
-  return { company: "Clínica Sorriso Prime", city: "Curitiba", state: "PR", ...overrides };
+  return {
+    company: "Clínica Sorriso Prime",
+    city: "Curitiba",
+    state: "PR",
+    cnpj: "18236120000158",
+    ...overrides,
+  };
 }
 
 describe("findPossibleDuplicates", () => {
@@ -134,5 +144,52 @@ describe("findPossibleDuplicates", () => {
   test("nunca lança e nunca bloqueia sozinho: retorna array, não boolean/throw", () => {
     const result = findPossibleDuplicates(input(), []);
     expect(Array.isArray(result)).toBe(true);
+  });
+});
+
+// Fase F.1 — CNPJ obrigatório no cadastro manual.
+describe("validateManualLeadInput", () => {
+  test("CNPJ ausente -> lança erro mencionando CNPJ", () => {
+    expect(() => validateManualLeadInput(input({ cnpj: "" }))).toThrow(/CNPJ/);
+  });
+
+  test("CNPJ só com espaços -> tratado como ausente, lança erro", () => {
+    expect(() => validateManualLeadInput(input({ cnpj: "   " }))).toThrow(/CNPJ/);
+  });
+
+  test("nome da empresa ausente -> lança erro (regra pré-existente preservada)", () => {
+    expect(() => validateManualLeadInput(input({ company: "" }))).toThrow(/obrigatórios/);
+  });
+
+  test("CNPJ com dígito verificador inválido -> lança erro específico", () => {
+    expect(() => validateManualLeadInput(input({ cnpj: "18.236.120/0001-59" }))).toThrow(
+      /inválido/,
+    );
+  });
+
+  test("CNPJ com quantidade errada de dígitos -> lança erro (dígito verificador não confere)", () => {
+    expect(() => validateManualLeadInput(input({ cnpj: "123" }))).toThrow(/inválido/);
+  });
+
+  test("CNPJ válido (formatado, com pontuação) -> normaliza e retorna sem lançar", () => {
+    const result = validateManualLeadInput(input({ cnpj: "18.236.120/0001-58" }));
+    expect(result.manualCnpj).toBe("18236120000158");
+    expect(result.company).toBe("Clínica Sorriso Prime");
+    expect(result.city).toBe("Curitiba");
+    expect(result.state).toBe("PR");
+  });
+
+  test("CNPJ válido (só dígitos) -> aceita sem exigir pontuação", () => {
+    const result = validateManualLeadInput(input({ cnpj: "18236120000158" }));
+    expect(result.manualCnpj).toBe("18236120000158");
+  });
+
+  test("campos com espaços nas pontas -> normaliza (trim) sem lançar", () => {
+    const result = validateManualLeadInput(
+      input({ company: "  Clínica Sorriso Prime  ", city: " Curitiba ", state: " PR " }),
+    );
+    expect(result.company).toBe("Clínica Sorriso Prime");
+    expect(result.city).toBe("Curitiba");
+    expect(result.state).toBe("PR");
   });
 });

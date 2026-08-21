@@ -1,3 +1,4 @@
+import { normalizeCnpj } from "./cnpj";
 import type { CompanyCandidate, RegistryCompanyData } from "./providers";
 
 // Fase E.2 — confirmação FINAL de um candidato a CNPJ contra dados oficiais.
@@ -230,5 +231,98 @@ export function confirmRegistryMatch(
     nameSimilarityScore,
     cityMatches,
     stateMatches,
+  };
+}
+
+// Fase F.1.1 — regra de confirmação de identidade ESPECÍFICA do cadastro
+// manual por CNPJ, deliberadamente separada de confirmRegistryMatch acima em
+// vez de generalizar aquele matcher. Os dois resolvem problemas diferentes:
+//
+// - confirmRegistryMatch (Fase E.2): o CNPJ é uma HIPÓTESE inferida por
+//   scraping (WebsiteCnpjResolver) a partir do site do lead — pode ser o
+//   CNPJ de uma agência/plataforma/fornecedor citado no rodapé, não da
+//   própria empresa. Nome+cidade+UF batendo é a corroboração que torna esse
+//   CNPJ inferido seguro o suficiente para aceitar. Continua exigindo os 3
+//   sinais — não foi alterado, não deve ser enfraquecido.
+//
+// - confirmManualIdentity (esta função): o CNPJ foi digitado DIRETAMENTE
+//   pelo usuário — é a âncora primária de identidade, não uma hipótese.
+//   Achado real (lead Jacomar, teste remoto controlado): usuário digitou
+//   "Jacomar Supermercado" / Curitiba; CNPJ 78.413.325/0001-93 é válido e o
+//   OpenCNPJ o encontra, mas devolve razão social "SUPERMERCADO JACOMAR
+//   LTDA" com sede cadastral em São José dos Pinhais/PR (matriz e filial
+//   operacional em municípios diferentes é uma situação legítima e comum —
+//   não indica que o CNPJ é de outra empresa). Bloquear esse caso com o
+//   mesmo portão de nome+cidade+UF do fluxo de Discovery rejeitaria uma
+//   identidade que já está corretamente confirmada pelo CNPJ.
+//
+// Bloqueio real (`identity_rejected`) é só quando o próprio elo CNPJ->dado
+// cadastral está comprometido: o registro devolvido é de um CNPJ diferente
+// do que foi pedido (nunca deveria acontecer com um provider correto, mas é
+// o único caso que realmente compromete "de qual empresa estamos falando").
+// CNPJ inválido e "não encontrado" são tratados ANTES desta função (ver
+// resolveManualLeadIdentity em prospecting-service.ts) — não duplicados
+// aqui. Nome/cidade/UF divergentes nunca bloqueiam: viram sinais de alerta
+// (`warnings`), registrados como evidência para o usuário revisar, nunca
+// escondidos.
+export type ManualIdentityOutcome =
+  "identity_confirmed" | "identity_confirmed_with_warnings" | "identity_rejected";
+
+export type ManualIdentityWarning = "nome_diverge" | "cidade_diverge" | "uf_diverge";
+
+export type ManualIdentityConfirmation = {
+  outcome: ManualIdentityOutcome;
+  warnings: ManualIdentityWarning[];
+  nameSimilarityScore: number;
+  cityMatches: boolean;
+  stateMatches: boolean;
+  reason: string;
+};
+
+export function confirmManualIdentity(
+  manualCnpj: string,
+  input: { company: string; city?: string; state?: string },
+  registry: RegistryCompanyData,
+): ManualIdentityConfirmation {
+  // Único bloqueio real desta função: o registro cadastral devolvido não é
+  // do CNPJ pedido. normalizeCnpj de novo aqui (não confia que todo
+  // CompanyRegistryProvider já devolve normalizado) — comparação nunca deve
+  // falhar só por formatação.
+  if (normalizeCnpj(registry.cnpj) !== manualCnpj) {
+    return {
+      outcome: "identity_rejected",
+      warnings: [],
+      nameSimilarityScore: 0,
+      cityMatches: false,
+      stateMatches: false,
+      reason: "O CNPJ retornado pela base cadastral não corresponde ao CNPJ informado.",
+    };
+  }
+
+  const nameSimilarityScore = nameSimilarity(input.company, registry);
+  const cityMatches =
+    !input.city ||
+    !registry.city ||
+    normalizeForComparison(input.city) === normalizeForComparison(registry.city);
+  const stateMatches =
+    !input.state ||
+    !registry.state ||
+    normalizeStateToUf(input.state) === normalizeStateToUf(registry.state);
+
+  const warnings: ManualIdentityWarning[] = [];
+  if (nameSimilarityScore < NAME_SIMILARITY_THRESHOLD) warnings.push("nome_diverge");
+  if (!cityMatches) warnings.push("cidade_diverge");
+  if (!stateMatches) warnings.push("uf_diverge");
+
+  return {
+    outcome: warnings.length === 0 ? "identity_confirmed" : "identity_confirmed_with_warnings",
+    warnings,
+    nameSimilarityScore,
+    cityMatches,
+    stateMatches,
+    reason:
+      warnings.length === 0
+        ? "Nome, cidade e UF informados conferem com o cadastro oficial."
+        : "CNPJ confirmado, mas alguns dados informados divergem do cadastro oficial — ver alertas.",
   };
 }
